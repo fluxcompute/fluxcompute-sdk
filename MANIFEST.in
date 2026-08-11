@@ -1,0 +1,7 @@
+# setuptools' sdist defaults sweep in tests/test*.py, but not tests/conftest.py
+# and not examples/. That shipped a suite that was both unguarded (conftest is
+# what stops a test run from POSTing to the real backend) and partly vacuous
+# (the notebook checks globbed an examples/ directory that wasn't there, so they
+# passed without testing anything). A half-suite is worse than none; the tests
+# live in the repo.
+prune tests

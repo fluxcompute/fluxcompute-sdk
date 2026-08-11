@@ -1,0 +1,87 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build tooling
+        run: |
+          python -m pip install --upgrade pip
+          pip install build twine
+
+      - name: Verify the tag matches the packaged version
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          pkg=$(python -c "import re,pathlib;\
+          print(re.search(r'^version = \"([^\"]+)\"', \
+          pathlib.Path('pyproject.toml').read_text(), re.M).group(1))")
+          if [ "$tag" != "$pkg" ]; then
+            echo "::error::Tag v$tag does not match pyproject version $pkg"
+            exit 1
+          fi
+
+      - name: Build sdist and wheel
+        run: python -m build
+
+      - name: Check that no private code is packaged
+        # The public SDK must never ship the recovery add-on or the
+        # server-side modules. Cheap to check, catastrophic to get wrong.
+        run: |
+          set -euo pipefail
+          listing=$(python - <<'PY'
+          import pathlib, tarfile, zipfile
+          names = []
+          for p in pathlib.Path("dist").iterdir():
+              if p.suffix == ".whl":
+                  names += zipfile.ZipFile(p).namelist()
+              elif p.name.endswith(".tar.gz"):
+                  names += tarfile.open(p).getnames()
+          print("\n".join(names))
+          PY
+          )
+          echo "$listing"
+          if echo "$listing" | grep -Eq 'intelligence/|redis_session|(^|/)app/|dashboard-ui|alembic|deploy/'; then
+            echo "::error::Private or server-side files found in the distribution"
+            exit 1
+          fi
+
+      - name: Scan the tree for secrets
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: twine check
+        run: twine check dist/*
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      # Trusted Publishing (OIDC) — no API token is stored anywhere.
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1

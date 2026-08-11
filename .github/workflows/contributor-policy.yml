@@ -1,0 +1,39 @@
+# Mechanical backstop for the closed-contributions policy in CONTRIBUTING.md.
+#
+# The likely failure mode isn't a stranger opening a PR — it's a maintainer
+# merging a "trivial" external fix without thinking about it. The moment
+# un-CLA'd external code lands, unilateral relicensing over that diff is
+# gone, and retrofitting means tracking down a contributor's sign-off years
+# later. A required check that can't be talked out of it is cheaper than a
+# policy nobody remembers under time pressure.
+#
+# This does not, and cannot, cover code pasted into an issue or email and
+# incorporated by hand — that's a human-process rule (see CONTRIBUTING.md),
+# not something CI can see.
+name: Contributor Policy
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, edited]
+
+permissions: {}
+
+jobs:
+  contributor-policy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check PR author against the maintainer allowlist
+        env:
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: |
+          set -euo pipefail
+          # Keep in sync with .github/CODEOWNERS.
+          ALLOWED="nkkrnkl ishan-pat"
+          for m in $ALLOWED; do
+            if [ "$AUTHOR" = "$m" ]; then
+              echo "$AUTHOR is a maintainer — OK"
+              exit 0
+            fi
+          done
+          echo "::error::This repository does not accept external code contributions (see CONTRIBUTING.md). PRs from $AUTHOR are closed automatically, unread — not a judgement on the contribution, a capacity decision. If this ever changes, it requires a signed CLA (.github/CLA.md) first."
+          exit 1
