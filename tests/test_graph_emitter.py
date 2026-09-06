@@ -70,6 +70,25 @@ class TestGraphEmitter:
         await em.flush()
         assert len(em._buffer) == 1
 
+    async def test_5xx_response_rebuffers_events(self):
+        """A non-200 response is a real failure, not a raised exception --
+        the old flush() logged this and still marked the batch as sent, so a
+        server-side outage silently dropped data on the client side too."""
+        em = GraphEmitter(fluxcompute_key="flx_test")
+        em._client = _StubHTTP(status_code=503)
+        em.record(_event())
+        await em.flush()
+        assert len(em._buffer) == 1
+
+    async def test_4xx_response_does_not_rebuffer_events(self):
+        """A 422 (e.g. oversized/malformed batch) will fail identically on
+        every retry -- only >=500 is treated as transient and retried."""
+        em = GraphEmitter(fluxcompute_key="flx_test")
+        em._client = _StubHTTP(status_code=422)
+        em.record(_event())
+        await em.flush()
+        assert em._buffer == []
+
     async def test_periodic_flush_ships_events_below_batch_size(self):
         em = GraphEmitter(fluxcompute_key="flx_test",
                           events_url="http://test/v1/graph/events",

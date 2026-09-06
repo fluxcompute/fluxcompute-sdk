@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Before 1.0, a minor version bump may contain breaking changes.
 
+## [Unreleased]
+
+### Fixed
+
+- **`GraphEmitter.flush()` and `TelemetryReporter.flush()` treated a
+  non-200 HTTP response the same as a delivered batch.** Both only
+  logged a warning on a bad status code, then still advanced past
+  the batch as "sent" -- only a raised exception or cancellation
+  triggered re-buffering. A backend outage (see the companion fix in
+  fluxcompute-observability for roadmap #53, where a transient DB
+  pool failure made `/v1/graph/events` return a real error status)
+  meant the client silently dropped the events it had already
+  buffered instead of retrying them once the backend recovered. Both
+  now re-buffer on `>= 500` responses and retry on the next flush
+  cycle; a 4xx (payload the server will never accept, e.g. an
+  oversized batch) still logs and drops, since retrying it changes
+  nothing.
+
 ## [0.3.1] - 2026-09-06
 
 ### Fixed
