@@ -6,8 +6,8 @@
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
 **Route every query to the cheapest model that can answer it.** FluxCompute
-classifies each request and dispatches it to the right tier — so simple
-questions stop costing frontier-model prices — and reports exactly what you
+classifies each request and dispatches it to the right tier, so simple
+questions stop costing frontier-model prices, and reports exactly what you
 saved on every call.
 
 ```bash
@@ -38,7 +38,7 @@ asyncio.run(main())
 ```
 
 Already using the Anthropic or OpenAI SDK? Swap the client and pass
-`model="auto"` — the response object keeps the fields you already use, with
+`model="auto"`. The response object keeps the fields you already use, with
 routing and cost data added under `response.fluxcompute`.
 
 ## How routing works
@@ -55,7 +55,7 @@ structure, reasoning markers, length, task type), which maps to a tier:
 Savings come from the queries that get downgraded: against the default
 baseline, an easy-tier call costs **80% less** and a medium-tier call **40%
 less**. Hard queries route to the baseline model itself, so they save
-nothing by design — your overall reduction is therefore a function of how
+nothing by design: your overall reduction is therefore a function of how
 much of your traffic genuinely needs a frontier model. The examples measure
 this on a mixed workload rather than asserting a number.
 
@@ -72,7 +72,7 @@ transcript.
 ## Execution graphs
 
 Wrap work in a `task()` scope and the SDK records a DAG of everything that
-happened inside it — LLM calls and your own steps, auto-parented, with
+happened inside it: LLM calls and your own steps, auto-parented, with
 status, timings, tokens, cost, and a rules-based failure classification
 (context overflow, budget, tool error, stall, refusal).
 
@@ -90,7 +90,7 @@ async def research(client):
         except TimeoutError:
             pass  # a step can fail without killing the whole task
 
-    # Re-runs only the failed step, with a rebuilt minimal context — not a
+    # Re-runs only the failed step, with a rebuilt minimal context, not a
     # replay of the whole transcript. The retry lands in the same graph,
     # linked to the node it replaces via depends_on.
     response = await client.resume(t.task_id)
@@ -98,12 +98,12 @@ async def research(client):
     return client.get_task_graph(t.task_id)
 ```
 
-It works in any framework — no integration code — because parenting uses
+It works in any framework, with no integration code, because parenting uses
 context variables rather than a wrapper API. A zero-touch
 [LangGraph](https://langchain-ai.github.io/langgraph/) adapter is included
 (`FluxCheckpointer`), which mirrors super-steps into the same task graph.
 
-Recording and resume are both **free and fully offline** — `client.resume()`
+Recording and resume are both **free and fully offline**. `client.resume()`
 works whenever the process that ran the task still holds its graph, with no
 network call beyond the provider request itself. What's paid is *durability*:
 if that process has since exited, resuming means reconstructing the graph
@@ -115,7 +115,7 @@ for the durable-recovery and dashboard offering.
 
 ## Telemetry & privacy
 
-> The hosted FluxCompute dashboard is in **invite-only early access** — the
+> The hosted FluxCompute dashboard is in **invite-only early access**: the
 > public telemetry endpoint is not yet generally available, and without a
 > reachable endpoint the SDK's telemetry is a silent no-op (it never delays
 > or fails your LLM calls). Self-hosted and dev deployments can point the SDK
@@ -127,7 +127,7 @@ SDK reports:
 
 - routing decisions, difficulty scores, token counts, cost, latency
 - execution-graph **structure**: node names, types, parentage, status,
-  failure reason, model, timings — and error strings, which are diagnostics
+  failure reason, model, timings, and error strings, which are diagnostics
 
 **Prompt and response text are never sent by default.** To include model
 output in the dashboard (a 500-character preview per node, plus full
@@ -150,7 +150,7 @@ Anthropic and OpenAI SDK conventions:
 | ---------------------- | -------------------------------------------- |
 | `ANTHROPIC_API_KEY` | Anthropic provider key |
 | `OPENAI_API_KEY` | OpenAI provider key |
-| `FLUXCOMPUTE_KEY` | FluxCompute key — enables telemetry |
+| `FLUXCOMPUTE_KEY` | FluxCompute key: enables telemetry |
 | `FLUX_TELEMETRY_URL` | Override the telemetry endpoint |
 | `FLUX_GRAPH_EVENTS_URL` | Override the graph-events endpoint |
 
@@ -159,9 +159,9 @@ The wire format the SDK sends is documented and versioned in
 
 ## Examples
 
-- [`examples/quickstart.ipynb`](examples/quickstart.ipynb) — first routed
+- [`examples/quickstart.ipynb`](examples/quickstart.ipynb): first routed
   call and measured savings, ~5 minutes
-- [`examples/full_walkthrough.ipynb`](examples/full_walkthrough.ipynb) —
+- [`examples/full_walkthrough.ipynb`](examples/full_walkthrough.ipynb):
   routing tiers, sessions, streaming, migrating from the Anthropic SDK
 
 ## Development
@@ -173,13 +173,13 @@ pytest tests/ -v
 ```
 
 We don't take external code contributions, but bug reports are genuinely
-useful — see [CONTRIBUTING.md](CONTRIBUTING.md).
+useful. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
-Apache-2.0 — see [LICENSE](LICENSE). Versions 0.1.0–0.2.1 were released
+Apache-2.0. See [LICENSE](LICENSE). Versions 0.1.0–0.2.1 were released
 under MIT and remain so.
 
-We don't accept external code contributions — see
+We don't accept external code contributions. See
 [CONTRIBUTING.md](CONTRIBUTING.md) for what is useful to us (bug reports,
 and security issues to security@fluxcompute.dev).
