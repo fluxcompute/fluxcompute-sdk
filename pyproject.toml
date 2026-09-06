@@ -24,8 +24,18 @@ classifiers = [
 ]
 
 dependencies = [
-    "anthropic>=0.30.0",
-    "openai>=1.30.0",
+    # Upper bound is load-bearing: anthropic 1.0.0 removed `temperature` from
+    # AsyncMessages.create() and the signature has no **kwargs to absorb it,
+    # so dispatch_anthropic's call raises TypeError on every real request.
+    # Nothing in CI catches this since tests patch the dispatchers -- only a
+    # real install against a real provider surfaces it. Same fix already
+    # applied server-side in fluxcompute-observability#14; ported here since
+    # this dependency spec is independent and never got the same pin. Adopting
+    # anthropic 1.x is a deliberate migration (audit every create() kwarg
+    # first), not a version-bump side effect.
+    "anthropic>=0.30.0,<1.0.0",
+    # Same class of risk; 2.x is what's currently tested.
+    "openai>=1.30.0,<3.0.0",
     "httpx>=0.27.0",
     "pydantic>=2.0.0",
 ]
