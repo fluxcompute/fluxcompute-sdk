@@ -6,17 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Before 1.0, a minor version bump may contain breaking changes.
 
-## [0.3.0] — unreleased
+## [0.3.0] - unreleased
 
 First release from the public repository.
 
-### Changed — licence
+### Licence
 
 - **The licence is now Apache-2.0** (previously MIT). Apache-2.0 adds an
   explicit patent grant, which matters now that the project has commercial
   add-ons. It remains an OSI-approved permissive licence: use, modification,
   redistribution, and commercial use are all still allowed.
-- Versions **0.1.0–0.2.1 were released under MIT and stay MIT** — that grant
+- Versions **0.1.0–0.2.1 were released under MIT and stay MIT**. That grant
   is irrevocable and unaffected by this change.
 - We no longer accept external code contributions. See `CONTRIBUTING.md`;
   bug reports and security disclosures remain welcome.
@@ -34,12 +34,12 @@ First release from the public repository.
 
 ### Added
 
-- **`FluxClient.resume()` is free and built in.** Graph-aware resume —
+- **`FluxClient.resume()` is free and built in.** Graph-aware resume,
   rebuilding minimal context from succeeded steps and re-running only the
-  failed one — works fully in-process and offline whenever the process that
+  failed one, works fully in-process and offline whenever the process that
   ran the task still holds its graph. `build_resume_plan` and `ResumePlan`
   are now public on `fluxcompute.graph`.
-- **`fluxcompute.plugins`** — an entry-point seam (`fluxcompute.plugins`
+- **`fluxcompute.plugins`**: an entry-point seam (`fluxcompute.plugins`
   group) for optional add-ons. Its role narrowed from "provide the resume
   algorithm" to "provide durability": a plugin's `fetch_graph(task_id)`
   reconstructs a graph this process didn't record, for resuming a task after
@@ -53,8 +53,8 @@ First release from the public repository.
 
 - **Response content is no longer sent by default.** Previously, setting a
   `fluxcompute_key` and opening a `task()` scope also shipped a 500-character
-  preview of every model response — plus full prompt/output snapshots for
-  failed nodes — to the FluxCompute backend. That is now opt-in via
+  preview of every model response, plus full prompt/output snapshots for
+  failed nodes, to the FluxCompute backend. That is now opt-in via
   `content_capture=True`. Telemetry still reports routing decisions, token
   counts, cost, latency, and execution-graph *structure* (node names, types,
   parentage, status, failure reason); error strings still ship, since they

@@ -8,16 +8,16 @@ maintaining outside patches against that isn't something we can do well right
 now, and we'd rather say so plainly than leave pull requests sitting open.
 
 Pull requests from outside the team will be closed unread. That isn't a
-judgement on the contribution — it's a capacity decision. This is enforced
+judgement on the contribution: it's a capacity decision. This is enforced
 mechanically, not just by policy: PRs from anyone outside the maintainer
 list fail a required check automatically.
 
-If this policy ever changes, any external Contribution — through a pull
+If this policy ever changes, any external Contribution (through a pull
 request or any other channel, including code pasted into an issue, email, or
-elsewhere — requires a signed [Contributor License Agreement](.github/CLA.md)
+elsewhere) requires a signed [Contributor License Agreement](.github/CLA.md)
 first. Without one, incorporating outside code would mean FluxCompute could
 never relicense that portion of the codebase without tracking down every
-contributor's individual consent — cheap to require up front, expensive to
+contributor's individual consent. Cheap to require up front, expensive to
 retrofit years later. No such exception exists today.
 
 ## What is useful to us
@@ -37,7 +37,7 @@ documentation bug on our side. Ask.
 ## Licence
 
 This project is Apache-2.0 (see [LICENSE](LICENSE)). You're free to use, run,
-modify, and redistribute it under those terms, including commercially — the
+modify, and redistribute it under those terms, including commercially: the
 restriction above is about what lands in *this* repository, not about what you
 may do with the code.
 
@@ -45,12 +45,12 @@ If you maintain a fork, you're welcome to; we just won't be merging from it.
 
 ## Building on it
 
-Graph-aware resume (`FluxClient.resume()`) is free and built into the SDK —
+Graph-aware resume (`FluxClient.resume()`) is free and built into the SDK:
 it works fully offline whenever the process that ran the task still holds
 its graph in memory. The SDK is otherwise deliberately extensible without
 touching this repo: optional add-ons attach through the `fluxcompute.plugins`
 entry-point group rather than through patches to the core. The
-`fluxcompute-recovery` add-on uses that seam to add *durable* resume —
+`fluxcompute-recovery` add-on uses that seam to add *durable* resume,
 reconstructing a task's graph from wherever it was persisted, for when the
 process that ran it is gone. The same seam is available to you; see
 `fluxcompute/plugins.py` for the interface.
@@ -64,5 +64,5 @@ pytest tests/ -v
 ```
 
 Tests use `asyncio_mode = "auto"`, so async tests need no decorator, and
-nothing in the suite makes a network call — provider clients are mocked and
+nothing in the suite makes a network call: provider clients are mocked and
 `tests/conftest.py` fails any test that reaches a real endpoint.

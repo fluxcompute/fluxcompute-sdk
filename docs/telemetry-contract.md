@@ -21,7 +21,7 @@ events are re-buffered; failures are never raised to the caller.
 
 The `v1` in the path is the contract version. Fields may be **added** within
 v1; existing fields will not change meaning or type, and removals require
-`v2`. The server must be a tolerant reader — SDK versions in the wild lag
+`v2`. The server must be a tolerant reader: SDK versions in the wild lag
 indefinitely, and an old SDK must keep reporting successfully against a
 newer backend.
 
@@ -31,14 +31,14 @@ This document specifies the wire protocol. It does not promise that the
 default host is serving it: the hosted FluxCompute backend is in invite-only
 early access, so `https://api.fluxcompute.dev` may not answer for you.
 
-That is a safe state by design — both channels are fire-and-forget and
+That is a safe state by design: both channels are fire-and-forget and
 swallow transport failures, so an unreachable endpoint costs nothing but the
 telemetry itself. The one place it surfaces is `FluxClient.verify()`, which
 raises `ConnectionError` naming the endpoint (as opposed to `ValueError`,
 which means the endpoint answered and rejected your key).
 
-To send this traffic somewhere you control — a local dev server, or your own
-implementation of this contract — set `FLUX_TELEMETRY_URL` and
+To send this traffic somewhere you control (a local dev server, or your own
+implementation of this contract), set `FLUX_TELEMETRY_URL` and
 `FLUX_GRAPH_EVENTS_URL` (see [Endpoint overrides](#endpoint-overrides)).
 
 ## Defaults, and what is never sent
@@ -53,7 +53,7 @@ implementation of this contract — set `FLUX_TELEMETRY_URL` and
 
 ## `POST /v1/telemetry/event`
 
-One event per routed request. No content — metrics only.
+One event per routed request. No content, metrics only.
 
 | Field | Type | Notes |
 | ----- | ---- | ----- |
@@ -94,18 +94,18 @@ deduplicates by `node_id` and treats later events as upserts.
 | `input_tokens` | integer | |
 | `output_tokens` | integer | |
 | `cost_usd` | number | |
-| `error` | string \| null | Exception text. A diagnostic, not model output — sent regardless of `content_capture` |
+| `error` | string \| null | Exception text. A diagnostic, not model output. Sent regardless of `content_capture` |
 | `session_id` | string \| null | |
 | `started_at` | string \| null | ISO 8601 |
 | `ended_at` | string \| null | ISO 8601 |
 | `attributes` | object | Caller-supplied key/values |
 | `events` | object[] | Timestamped node events |
-| `output_preview` | string | **content** — first 500 chars of model output |
-| `prompt_full` | string | **content** — full prompt, failed nodes only |
-| `output_full` | string | **content** — full output, failed nodes only |
+| `output_preview` | string | **content**: first 500 chars of model output |
+| `prompt_full` | string | **content**: full prompt, failed nodes only |
+| `output_full` | string | **content**: full output, failed nodes only |
 
 Batching: 20 events or 5 seconds. **A single POST carries at most 200
-events** — the SDK chunks to this cap because an oversize batch would be
+events**. The SDK chunks to this cap because an oversize batch would be
 rejected whole. Servers implementing this contract must accept batches up
 to that size.
 
@@ -126,7 +126,7 @@ otherwise surface only as a silent gap in the dashboard).
 | Variable | Effect |
 | -------- | ------ |
 | `FLUX_TELEMETRY_URL` | Sets the telemetry endpoint. Highest precedence |
-| `FLUX_GRAPH_EVENTS_URL` | Sets the graph-events endpoint — and, if `FLUX_TELEMETRY_URL` is unset, the telemetry endpoint's host is derived from it, as is `/v1/whoami` |
+| `FLUX_GRAPH_EVENTS_URL` | Sets the graph-events endpoint. If `FLUX_TELEMETRY_URL` is unset, the telemetry endpoint's host is derived from it, as is `/v1/whoami` |
 
 Point `FLUX_GRAPH_EVENTS_URL` at `http://localhost:8000/v1/graph/events` to
 send everything to a local server during development.

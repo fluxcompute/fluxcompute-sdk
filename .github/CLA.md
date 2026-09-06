@@ -1,7 +1,7 @@
 # Individual Contributor License Agreement
 
 **Status: not currently in use.** This repository does not accept external
-code contributions (see [CONTRIBUTING.md](../CONTRIBUTING.md)) — this
+code contributions (see [CONTRIBUTING.md](../CONTRIBUTING.md)). This
 document exists so the terms are settled *before* they're ever needed, not
 improvised under time pressure the day an exception is granted. No signature
 against this text is valid until FluxCompute's maintainers explicitly say
