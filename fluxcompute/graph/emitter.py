@@ -123,7 +123,19 @@ class GraphEmitter:
                         "Content-Type": "application/json",
                     },
                 )
+                if response.status_code >= 500:
+                    # Transient server-side failure (e.g. the backend's DB
+                    # pool isn't up) -- re-buffer this chunk and everything
+                    # after it instead of treating a non-200 as delivered.
+                    # A prior version logged this and moved on regardless,
+                    # so a real server-side outage silently lost data on
+                    # both ends at once.
+                    logger.warning("Graph event flush failed: %s (will retry)", response.status_code)
+                    self._rebuffer(events[i:])
+                    return
                 if response.status_code != 200:
+                    # 4xx: this exact payload will fail identically forever
+                    # (oversize batch, malformed event) -- not retryable.
                     logger.warning("Graph event flush failed: %s", response.status_code)
                 sent = i + len(chunk)
         except asyncio.CancelledError:

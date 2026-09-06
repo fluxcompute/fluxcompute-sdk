@@ -155,6 +155,25 @@ class TestResilience:
             await r.flush()
         assert len(r._buffer) <= 12, f"buffer grew to {len(r._buffer)} while offline"
 
+    async def test_5xx_response_rebuffers_events(self):
+        """A non-200 response is a real failure, not a raised exception --
+        the old flush() logged this and still cleared the buffer, so a
+        server-side outage silently dropped data on the client side too."""
+        r = TelemetryReporter(fluxcompute_key="flx_test", batch_size=100)
+        r._client = _StubHTTP(status_code=503)
+        r.record(_event())
+        await r.flush()
+        assert len(r._buffer) == 1
+
+    async def test_4xx_response_does_not_rebuffer_events(self):
+        """A 4xx will fail identically on every retry -- only >=500 is
+        treated as transient and retried."""
+        r = TelemetryReporter(fluxcompute_key="flx_test", batch_size=100)
+        r._client = _StubHTTP(status_code=422)
+        r.record(_event())
+        await r.flush()
+        assert r._buffer == []
+
     async def test_cancellation_rebuffers_instead_of_dropping(self):
         """CancelledError is a BaseException, so `except Exception` never saw
         it — a cancelled flush silently lost its events."""

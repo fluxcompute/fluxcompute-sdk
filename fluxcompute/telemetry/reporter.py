@@ -142,6 +142,12 @@ class TelemetryReporter:
                     "Content-Type": "application/json",
                 },
             )
+            if response.status_code >= 500:
+                # Transient server-side failure -- re-buffer instead of
+                # treating a non-200 as delivered (matches GraphEmitter).
+                logger.warning(f"Telemetry flush failed: {response.status_code} (will retry)")
+                self._rebuffer(events)
+                return
             if response.status_code != 200:
                 logger.warning(f"Telemetry flush failed: {response.status_code}")
         except asyncio.CancelledError:
