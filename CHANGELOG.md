@@ -6,7 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Before 1.0, a minor version bump may contain breaking changes.
 
-## [0.3.0] - unreleased
+## [0.3.1] - 2026-09-06
+
+### Fixed
+
+- **Pinned `anthropic<1.0.0` and `openai<3.0.0`.** The unbounded
+  `anthropic>=0.30.0` spec in 0.3.0 let a plain `pip install` resolve
+  into `anthropic` 1.0.0+, which removed `temperature` from
+  `AsyncMessages.create()`. The dispatcher always passes `temperature`
+  with no `**kwargs` to absorb it, so every real (non-mocked) routed
+  call raised `TypeError` on a fresh install. Added
+  `tests/test_provider_sdk_compat.py`, which introspects the actually
+  installed provider SDKs against the exact kwargs the dispatchers
+  send, so a future breaking change like this fails CI instead of
+  only a real install.
+
+### Changed
+
+- Em dashes removed from README, CONTRIBUTING, this changelog, the
+  CLA, and the telemetry contract doc.
+
+## [0.3.0] - 2026-08-11
 
 First release from the public repository.
 
