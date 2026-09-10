@@ -12,7 +12,9 @@ import re
 import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-NOTEBOOKS = sorted((ROOT / "examples").glob("*.ipynb"))
+# rglob, not glob: a notebook or script one directory down must not silently escape the checks.
+NOTEBOOKS = sorted((ROOT / "examples").rglob("*.ipynb"))
+EXAMPLE_SCRIPTS = sorted((ROOT / "examples").rglob("*.py"))
 
 # Names removed in 0.3.0; docs must not reference them.
 REMOVED_SYMBOLS = (
@@ -82,6 +84,19 @@ def test_readme_does_not_reference_removed_symbols():
     text = (ROOT / "README.md").read_text(encoding="utf-8")
     for symbol in REMOVED_SYMBOLS:
         assert symbol not in text, f"README references removed {symbol!r}"
+
+
+@pytest.mark.parametrize("path", EXAMPLE_SCRIPTS, ids=lambda p: str(p.relative_to(ROOT)))
+def test_example_scripts_compile(path):
+    """Scripts are plain modules, so plain-script semantics apply: no top-level await."""
+    compile(path.read_text(encoding="utf-8"), str(path.relative_to(ROOT)), "exec")
+
+
+@pytest.mark.parametrize("path", EXAMPLE_SCRIPTS, ids=lambda p: str(p.relative_to(ROOT)))
+def test_example_scripts_do_not_reference_removed_symbols(path):
+    text = path.read_text(encoding="utf-8")
+    for symbol in REMOVED_SYMBOLS:
+        assert symbol not in text, f"{path.name} references removed {symbol!r}"
 
 
 def _literal_list_from_notebook(path: pathlib.Path, name: str) -> list[str]:

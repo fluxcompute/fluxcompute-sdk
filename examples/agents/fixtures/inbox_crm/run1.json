@@ -1,0 +1,155 @@
+[
+  {
+    "message_id": "<20260901.182000.sakura.001@sakura-butsuryu.example>",
+    "from": "Kenji Watanabe <k.watanabe@sakura-butsuryu.example>",
+    "to": "hello@northwind.example.com",
+    "subject": "Demo request — Sakura Butsuryu (Osaka)",
+    "date": "2026-09-01T18:20:00+09:00",
+    "body": "お世話になっております。\n\nWe plan roughly 900 loads a month out of Osaka and Kobe and we are comparing three planning APIs. Could we book a thirty minute demo next week, ideally Tuesday or Wednesday morning JST? Three dispatchers would join.\n\nWe would want to see the carrier ranking explanation and how a dispatcher override works.\n\n渡辺 健二 / Kenji Watanabe\nSakura Butsuryu"
+  },
+  {
+    "message_id": "<CAF9x71-um-0001@umbrella-logistics.example>",
+    "from": "Dana Okafor <dana.okafor@umbrella-logistics.example>",
+    "to": "hello@northwind.example.com",
+    "subject": "Carrier ranking API for a 40-truck brokerage",
+    "date": "2026-09-01T09:14:00-05:00",
+    "body": "Hello,\n\nWe are a 40-truck brokerage in Columbus and we plan about 400 loads a week by hand. I want to understand what the ranking API returns and what Growth costs at our volume. We move mostly dry van, Midwest to Southeast.\n\nCan you send pricing and a sense of what an integration looks like?\n\nDana Okafor\nUmbrella Logistics"
+  },
+  {
+    "message_id": "<20260901-bb-4412@breadbasket-bakeries.example>",
+    "from": "Marcus Reed <marcus@breadbasket-bakeries.example>",
+    "to": "hello@northwind.example.com",
+    "subject": "Do you do last-mile grocery delivery routing?",
+    "date": "2026-09-01T16:02:00+00:00",
+    "body": "Hi there,\n\nWe run twelve vans doing same-day drops to grocery stores inside one city. No freight brokerage, no long haul, no carriers of our own. Someone told me Northwind does routing, so: does any of this apply to us, and what would it cost?\n\nMarcus Reed\nBreadbasket Bakeries"
+  },
+  {
+    "message_id": "<fw-media-7781@freightwire-media.example>",
+    "from": "Ivo Petrov <ivo@freightwire-media.example>",
+    "to": "hello@northwind.example.com",
+    "subject": "Comment for a piece on carrier capacity data",
+    "date": "2026-09-01T17:41:00+01:00",
+    "body": "Hello,\n\nI am writing a piece for Freightwire on how planning tools source carrier capacity, and whether the refresh intervals vendors advertise hold up in practice. Would someone at Northwind be willing to go on the record?\n\nMy deadline is 12 September.\n\nIvo Petrov\nFreightwire"
+  },
+  {
+    "message_id": "<ooo-maya-20260902@globex.example>",
+    "from": "Maya Idris <maya.idris@globex.example>",
+    "to": "hello@northwind.example.com",
+    "subject": "Automatic reply: Out of office until 15 September",
+    "date": "2026-09-02T07:15:00+00:00",
+    "auto_submitted": "auto-replied",
+    "body": "I am out of the office until 15 September with limited access to email.\n\nFor anything about the Globex integration please contact the platform team.\n\nMaya Idris"
+  },
+  {
+    "message_id": "<cascade-8812@cascade-carriers.example>",
+    "from": "Nadia Farr <nadia@cascade-carriers.example>",
+    "to": "support@northwind.example.com",
+    "subject": "Webhook retries not firing",
+    "date": "2026-09-02T08:31:00-04:00",
+    "body": "Hi,\n\nSince the 0.3.1 upgrade our webhook retries are not firing. A delivery fails with a 500 from our endpoint, the dashboard shows the failure, and then nothing. No second attempt and no dead letter. We are on the Growth plan.\n\nIs retry configurable per endpoint, or is something wrong on our side?\n\nNadia Farr\nCascade Carriers"
+  },
+  {
+    "message_id": "<f0a1b2c3-fwd@northwind.example.com>",
+    "from": "Ops Northwind <ops@northwind.example.com>",
+    "to": "support@northwind.example.com",
+    "subject": "Fwd: Webhook retries not firing",
+    "date": "2026-09-02T09:05:00-04:00",
+    "body": "Can someone pick this up? Not one of our accounts as far as I can tell.\n\n---------- Forwarded message ---------\nFrom: Nadia Farr <nadia@cascade-carriers.example>\nDate: Wed, 2 Sep 2026 at 13:31\nSubject: Webhook retries not firing\nTo: <support@northwind.example.com>\n\nHi,\n\nSince the 0.3.1 upgrade our webhook retries are not firing. A delivery fails with a 500 from our endpoint, the dashboard shows the failure, and then nothing. No second attempt and no dead letter. We are on the Growth plan.\n\nIs retry configurable per endpoint, or is something wrong on our side?\n\nNadia Farr\nCascade Carriers"
+  },
+  {
+    "message_id": "<cyberdyne-obs-551@cyberdyne.example>",
+    "from": "Blake Sutton <blake@cyberdyne.example>",
+    "to": "hello@northwind.example.com",
+    "subject": "Cut your observability bill by 40 percent",
+    "date": "2026-09-02T13:20:00+00:00",
+    "body": "Hi,\n\nCyberdyne Observability cuts log and trace spend by about 40 percent for engineering teams your size, usually inside a quarter. Happy to run a free assessment against your current invoice.\n\nFifteen minutes this week or next? https://cyberdyne.example/assessment\n\nBlake Sutton\nCyberdyne Cloud Services"
+  },
+  {
+    "message_id": "<kestrel-partner-2261@kestrel-tms.example>",
+    "from": "=?utf-8?q?Tom=C3=A1s_Delgado?= <tomas@kestrel-tms.example>",
+    "to": "hello@northwind.example.com",
+    "subject": "Kestrel TMS and Northwind: joint integration listing",
+    "date": "2026-09-02T15:47:00+02:00",
+    "content_transfer_encoding": "quoted-printable",
+    "body": "Hola / hello,\n\nKestrel TMS already lists Northwind as a planning integration, and about a =\nthird of our shared customers use both. We would like to for=\nmalise it: a jo=\nint listing in both marketplaces, a shared onboarding guide, and a co-writt=\nen case study with one of the brokers we both serve.\n\nWhat we have in mind is written up here: https://kestrel-tms.example/partne=\nrs/northwind\n\nWho owns partnerships on your side?\n\nTom=C3=A1s Delgado\nHead of Ecosystem, Kestrel TMS"
+  },
+  {
+    "message_id": "<CAF9x71-um-0002@umbrella-logistics.example>",
+    "from": "Dana Okafor <dana.okafor@umbrella-logistics.example>",
+    "to": "hello@northwind.example.com",
+    "subject": "Re: Carrier ranking API for a 40-truck brokerage",
+    "date": "2026-09-02T11:02:00-05:00",
+    "in_reply_to": "<CAF9x71-um-0001@umbrella-logistics.example>",
+    "references": [
+      "<CAF9x71-um-0001@umbrella-logistics.example>"
+    ],
+    "body": "Thanks, that helps.\n\nTwo more things. Most of our volume is Midwest to Southeast dry van and we run Kestrel TMS for dispatch. Does the ranking API read capacity from Kestrel directly, or do we push loads to you?\n\nAlso, who would we talk to about a pilot?\n\nDana\n\nOn Tue, 1 Sep 2026 at 15:14, Dana Okafor <dana.okafor@umbrella-logistics.example> wrote:\n> We are a 40-truck brokerage in Columbus and we plan about 400 loads a week\n> by hand. I want to understand what the ranking API returns and what Growth\n> costs at our volume."
+  },
+  {
+    "message_id": "<tb-cand-4410@talentbridge.example>",
+    "from": "Helen Marsh <helen.marsh@talentbridge.example>",
+    "to": "hello@northwind.example.com",
+    "subject": "Senior backend engineers available this quarter",
+    "date": "2026-09-02T18:03:00+00:00",
+    "body": "Hello,\n\nI place senior backend and platform engineers in the Netherlands and Germany. I have four people finishing contracts this quarter, two of them with routing and optimisation backgrounds.\n\nWould it be useful to send profiles, or are you not hiring right now?\n\nHelen Marsh\nTalentBridge"
+  },
+  {
+    "message_id": "<globex-io-9f31@globex-freight.example>",
+    "from": "Sam Ortega <sam.ortega@globex-freight.example>",
+    "to": "support@northwind.example.com",
+    "subject": "Planning API returning 502s since 06:00 UTC, is anything down?",
+    "date": "2026-09-03T06:12:00+00:00",
+    "body": "Every plan request from our Frankfurt workers has returned a 502 since about 06:00 UTC. Retries do not help and nothing changed on our side overnight.\n\nWe have dispatchers sitting idle. Your status page says all green, which does not match what we are seeing.\n\nSam Ortega\nGlobex Freight, platform team"
+  },
+  {
+    "message_id": "<fw-2026-09-03@freightweekly-list.example>",
+    "from": "Freight Weekly <news@freightweekly-list.example>",
+    "to": "hello@northwind.example.com",
+    "subject": "Freight Weekly: capacity tightens into the fourth quarter",
+    "date": "2026-09-03T07:44:00+00:00",
+    "list_unsubscribe": "<https://freightweekly-list.example/u/8812>, <mailto:unsubscribe@freightweekly-list.example>",
+    "body": "This week: dry van capacity tightens ahead of the fourth quarter, three brokerages\nmerge in the Midwest, and a look at what tariff changes mean for cross-border lanes.\n\nRead the issue: https://freightweekly-list.example/2026/09/03\n\nYou are receiving this because you signed up at a trade show."
+  },
+  {
+    "message_id": "<a1f2c9d0-soy@soylent.example>",
+    "from": "Ray Vance <rvance@soylent.example>",
+    "to": "hello@northwind.example.com",
+    "subject": "quick chat?",
+    "date": "2026-09-03T10:30:00+00:00",
+    "body": "Are you around Thursday or Friday? Would be good to talk.\n\nRay"
+  },
+  {
+    "message_id": "<0917aa31@globex-billing.example>",
+    "from": "Globex Billing <accounts@globex-billing.example>",
+    "to": "ap@northwind.example.com",
+    "reply_to": "billing-team@mail-relay.example",
+    "subject": "urgent: update payment details before Friday",
+    "date": "2026-09-03T11:15:00+00:00",
+    "body": "Dear supplier,\n\nOur finance system migration is complete. To avoid a suspension of service you must verify your payment method on the new portal before Friday.\n\nhttps://secure-payments-portal.net/globex/verify\n\nGlobex Billing Department"
+  },
+  {
+    "message_id": "<globex-inv-4471@globex.example>",
+    "from": "Aisha Bello <aisha.bello@globex.example>",
+    "to": "hello@northwind.example.com",
+    "subject": "Invoice 4471, charged twice for August",
+    "date": "2026-09-03T12:40:00+00:00",
+    "body": "Hello,\n\nInvoice 4471 for August shows two charges of $499 for the same Growth subscription, the second one posted on 29 August. Could someone look at it and refund the duplicate?\n\nThe card on file is 4111 1111 1111 1111 and the billing contact is aisha.bello@globex.example. If it is easier to talk it through, my direct line is +1 (415) 555-0142.\n\nThanks,\nAisha Bello\nGlobex Freight"
+  },
+  {
+    "message_id": "<apex-0091@apexsales-tools.example>",
+    "from": "Dana Whitfield <dana@apexsales-tools.example>",
+    "to": "hello@northwind.example.com",
+    "reply_to": "replies@mktg-relay.example",
+    "subject": "Northwind and ApexSales: three times your outbound",
+    "date": "2026-09-03T13:05:00+00:00",
+    "body": "Hi,\n\nApexSales books meetings for logistics software teams. Our clients see about three times the outbound reply rate within two months, and we only charge on meetings actually held.\n\nWorth a look: https://apexsales-tools.example/roi\n\nDana Whitfield\nApexSales"
+  },
+  {
+    "message_id": "<initech-demo-77c1@initech.example>",
+    "from": "Angela Vu <angela.vu@initech.example>",
+    "to": "hello@northwind.example.com",
+    "subject": "Can we get a demo of the new lane view?",
+    "date": "2026-09-03T08:58:00-07:00",
+    "body": "Hi Jordan,\n\nWe saw the new lane view in the release notes. Can we get a walkthrough for the dispatch team? Six people, half an hour, some time in the next two weeks.\n\nWe are on Growth and have been since March.\n\nAngela Vu\nInitech Distribution"
+  }
+]

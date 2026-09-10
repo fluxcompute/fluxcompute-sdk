@@ -8,6 +8,15 @@ Before 1.0, a minor version bump may contain breaking changes.
 
 ## [Unreleased]
 
+### Added
+
+- **Two worked agents under `examples/agents/`**: a company brain that keeps a
+  document in sync with its sources, and a CRM inbox that turns mail into one
+  row per conversation. Complete programs with fixtures and a `$0` test
+  suite, runnable with a provider key alone; a `FLUXCOMPUTE_KEY` is optional
+  and adds the dashboard link. PyYAML comes in via a new `examples` extra.
+  `ruff` and the docs checks now cover `examples/`.
+
 ### Fixed
 
 - **`GraphEmitter.flush()` and `TelemetryReporter.flush()` treated a

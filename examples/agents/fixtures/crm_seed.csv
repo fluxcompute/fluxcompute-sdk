@@ -1,0 +1,7 @@
+account_id,name,domains,kind,icp,owner,region
+ACC-001,Globex Freight,globex.example|globex-freight.example,customer,yes,Jordan Bell,NA
+ACC-002,Initech Distribution,initech.example,customer,yes,Jordan Bell,NA
+ACC-003,Umbrella Logistics,umbrella-logistics.example,prospect,yes,Wei Chen,NA
+ACC-004,Breadbasket Bakeries,breadbasket-bakeries.example,prospect,no,Wei Chen,NA
+ACC-005,Cyberdyne Cloud Services,cyberdyne.example,vendor,no,,NA
+ACC-006,Soylent Shipping,soylent.example,churned,yes,Wei Chen,EU

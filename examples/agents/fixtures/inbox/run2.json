@@ -1,0 +1,40 @@
+[
+  {
+    "message_id": "<2026-09-05-reply@northwind.example.com>",
+    "from": "priya@northwind.example.com",
+    "to": "team@northwind.example.com",
+    "subject": "Re: Starter plan moves to $59 on 1 October",
+    "date": "2026-09-05T10:02:00+00:00",
+    "seq": 5,
+    "in_reply_to": "<2026-09-01-price@northwind.example.com>",
+    "body": "Confirmed, the billing page is updated.\n\n> On 1 September Priya wrote:\n> Effective 1 October the Starter plan is $59 per month, not $49. Growth and\n> Enterprise are unchanged. The pricing page will be updated this week; until\n> then the number in docs/pricing.md is stale."
+  },
+  {
+    "message_id": "<2026-09-05-office@northwind.example.com>",
+    "from": "ops@northwind.example.com",
+    "to": "team@northwind.example.com",
+    "subject": "=?UTF-8?B?TmV3IG9mZmljZTogUm90dGVyZGFtIOKAlCBmcm9tIDEgTm92ZW1iZXI=?=",
+    "date": "2026-09-05T13:20:00+00:00",
+    "seq": 6,
+    "content_transfer_encoding": "quoted-printable",
+    "body": "From 1 November our European office is in Rotterdam, at Wilhelminakade 175.=\n\nThe Antwerp desk closes on 31 October. Travel bookings after that date shoul=\nd use the Rotterdam address."
+  },
+  {
+    "message_id": "<2026-09-04-late@northwind.example.com>",
+    "from": "priya@northwind.example.com",
+    "to": "team@northwind.example.com",
+    "subject": "Pricing thought",
+    "date": "2026-09-04T02:00:00+09:00",
+    "seq": 7,
+    "body": "Wondering aloud whether Starter should stay at $49 after all. Not a decision, just thinking."
+  },
+  {
+    "message_id": "<2026-09-06-fwd@northwind.example.com>",
+    "from": "priya@northwind.example.com",
+    "to": "advisors@northwind.example.com",
+    "subject": "Fwd: Starter plan moves to $59 on 1 October",
+    "date": "2026-09-06T09:00:00+00:00",
+    "seq": 8,
+    "body": "Team,\n\nEffective 1 October the Starter plan is $59 per month, not $49. Growth and Enterprise are unchanged. The pricing page will be updated this week; until then the number in docs/pricing.md is stale.\n\nPriya"
+  }
+]

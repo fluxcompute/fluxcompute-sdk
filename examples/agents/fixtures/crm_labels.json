@@ -1,0 +1,141 @@
+{
+  "version": "2026-09-07.1",
+  "note": "One entry per thread per run. `match` is the Message-ID of any message in the thread; the run resolves it to that thread's key. `request_type` uses two labels the model never produces -- `ignored` and `quarantined` -- so that a message the gate stopped is scored in the same confusion matrix as one the model classified. A phishing mail that reached the model is then a recall miss on `quarantined`, which is the number the phishing gate reads. `priority` is 0 for anything the gate stopped, because priority is only computed for classified threads.",
+  "run1": [
+    {
+      "match": "<CAF9x71-um-0001@umbrella-logistics.example>",
+      "request_type": "sales_inquiry",
+      "status": "open",
+      "priority": 3,
+      "branch": "ICP-fit sales inquiry from a known prospect; two messages in the thread"
+    },
+    {
+      "match": "<20260901-bb-4412@breadbasket-bakeries.example>",
+      "request_type": "sales_inquiry",
+      "status": "open",
+      "priority": 3,
+      "branch": "sales inquiry from an account marked icp=no; same priority, different action"
+    },
+    {
+      "match": "<a1f2c9d0-soy@soylent.example>",
+      "request_type": "other",
+      "status": "needs_review",
+      "priority": 2,
+      "branch": "too vague to place; the model's own confidence falls under the floor"
+    },
+    {
+      "match": "<20260901.182000.sakura.001@sakura-butsuryu.example>",
+      "request_type": "demo_request",
+      "status": "open",
+      "priority": 3,
+      "branch": "demo request, unknown domain, +09:00 send time"
+    },
+    {
+      "match": "<initech-demo-77c1@initech.example>",
+      "request_type": "demo_request",
+      "status": "open",
+      "priority": 4,
+      "branch": "demo request from a customer; +1 for account kind"
+    },
+    {
+      "match": "<globex-io-9f31@globex-freight.example>",
+      "request_type": "support",
+      "status": "open",
+      "priority": 5,
+      "branch": "support on the customer's second domain (globex-freight.example); +1 customer, +1 subject"
+    },
+    {
+      "match": "<cascade-8812@cascade-carriers.example>",
+      "request_type": "support",
+      "status": "open",
+      "priority": 3,
+      "branch": "support from a domain in no account; also arrives a second time as a forward"
+    },
+    {
+      "match": "<kestrel-partner-2261@kestrel-tms.example>",
+      "request_type": "partnership",
+      "status": "open",
+      "priority": 2,
+      "branch": "partnership proposal; quoted-printable body"
+    },
+    {
+      "match": "<cyberdyne-obs-551@cyberdyne.example>",
+      "request_type": "vendor",
+      "status": "open",
+      "priority": 1,
+      "branch": "vendor pitch from an account whose kind is vendor"
+    },
+    {
+      "match": "<apex-0091@apexsales-tools.example>",
+      "request_type": "vendor",
+      "status": "needs_review",
+      "priority": 1,
+      "branch": "vendor pitch that trips exactly one phishing rule (Reply-To on another domain)"
+    },
+    {
+      "match": "<tb-cand-4410@talentbridge.example>",
+      "request_type": "recruiting",
+      "status": "open",
+      "priority": 1,
+      "branch": "recruiter"
+    },
+    {
+      "match": "<fw-media-7781@freightwire-media.example>",
+      "request_type": "press",
+      "status": "open",
+      "priority": 2,
+      "branch": "press request"
+    },
+    {
+      "match": "<globex-inv-4471@globex.example>",
+      "request_type": "billing",
+      "status": "open",
+      "priority": 4,
+      "branch": "billing question from a customer; carries a phone and a card-shaped number"
+    },
+    {
+      "match": "<0917aa31@globex-billing.example>",
+      "request_type": "quarantined",
+      "status": "quarantined",
+      "priority": 0,
+      "branch": "phishing: four rules fire, so no model ever sees it"
+    },
+    {
+      "match": "<ooo-maya-20260902@globex.example>",
+      "request_type": "ignored",
+      "status": "ignored",
+      "priority": 0,
+      "branch": "auto-reply (Auto-Submitted), zero LLM calls"
+    },
+    {
+      "match": "<fw-2026-09-03@freightweekly-list.example>",
+      "request_type": "ignored",
+      "status": "ignored",
+      "priority": 0,
+      "branch": "newsletter (List-Unsubscribe), zero LLM calls"
+    }
+  ],
+  "run2": [
+    {
+      "match": "<ng-8000-0012@northgate-logistics.example>",
+      "request_type": "sales_inquiry",
+      "status": "open",
+      "priority": 3,
+      "branch": "new sales inquiry, unknown domain"
+    },
+    {
+      "match": "<CAF9x71-um-0003@umbrella-logistics.example>",
+      "request_type": "sales_inquiry",
+      "status": "open",
+      "priority": 4,
+      "branch": "third message on an open thread: updates the row and +1 for thread length"
+    },
+    {
+      "match": "<inv-9921@initech-secure.example>",
+      "request_type": "quarantined",
+      "status": "quarantined",
+      "priority": 0,
+      "branch": "supplier-payment fraud against a real customer's name"
+    }
+  ]
+}
