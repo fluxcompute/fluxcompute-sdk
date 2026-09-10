@@ -9,13 +9,6 @@
 
 This makes real calls to Anthropic and costs a few cents. Set ANTHROPIC_API_KEY first.
 FLUXCOMPUTE_KEY is optional: with it, the run also appears in the hosted dashboard.
-
-The shape worth copying is the division of labour. The model is asked for one judgement per
-message -- what kind of request this is, quoted from the message itself -- and code decides
-everything with a consequence: what never reaches a model at all, which thread a message
-belongs to, how urgent it is, which account it lands on, and what the row becomes. There is
-no send path in this file, so the worst a bad classification can do is put a row in the wrong
-column of a CSV a human reads.
 """
 
 from __future__ import annotations
@@ -62,18 +55,9 @@ from _common import (  # noqa: E402
 HERE = Path(__file__).resolve().parent
 OUT = HERE / "out"
 
-# The mailbox these messages arrived in. Mail from ourselves is never a stranger, so it is
-# exempt from the impersonation rules below -- a forward of a customer's complaint by our own
-# operations team must not be quarantined as a look-alike of the customer.
-OWN_DOMAIN = "northwind.example.com"
-
-# Below this the model is telling us it does not know. A thread under the floor is routed to a
-# human rather than filed, which is cheaper than filing it wrongly and hearing about it later.
-CONFIDENCE_FLOOR = 0.60
-
-# Bump on any edit to the rubric or to REQUEST_TYPES. Classifications are cached per
-# (message, prompt_version), so a bump is what re-reads the whole inbox; without it a taxonomy
-# fix would apply only to mail that happens to arrive next.
+OWN_DOMAIN = "northwind.example.com"  # mail from ourselves is exempt from the impersonation rules
+CONFIDENCE_FLOOR = 0.60  # below this the thread goes to a person
+# bump on any edit to the rubric or REQUEST_TYPES; classifications are cached per prompt_version
 PROMPT_VERSION = 2
 
 SCHEMA_SQL = """
@@ -106,9 +90,7 @@ CREATE TABLE IF NOT EXISTS crm (
   first_seen_task TEXT, last_seen_task TEXT);
 """
 
-# The columns that make up the record. Everything outside this list is provenance -- which run
-# last touched the row -- and provenance changing is not the record changing, which is what
-# lets "re-running the same inbox changes nothing" be a checkable claim rather than a hope.
+# the record; provenance stays outside it so a re-run can be a zero-row diff
 RECORD_COLUMNS = (
     "account_id",
     "account_name",
@@ -128,11 +110,8 @@ RECORD_COLUMNS = (
     "last_msg_at",
 )
 
-# No guard on the update. build_row reads every message the thread has ever had from the
-# database, not from this run's inbox, so the row it builds is always the thread's current
-# state and no replay, in any order, can move it backwards. A guard on last_msg_at would only
-# ever refuse the one write that needs to happen: the rebuild after --forget removed the
-# thread's newest message.
+# no WHERE guard: build_row reads the thread's union from the database, so nothing can replay
+# backwards, and a guard would only refuse the rebuild after --forget
 UPSERT_SQL = (
     "INSERT INTO crm(thread_key, "
     + ", ".join(RECORD_COLUMNS)
@@ -143,15 +122,8 @@ UPSERT_SQL = (
     + ", last_seen_task=excluded.last_seen_task"
 )
 
-# The taxonomy is one table because the two things a request type decides -- how it is described
-# to the model, and how urgent it starts out -- have to stay consistent with each other. Kept in
-# a prompt and a lookup table separately, a class ends up described one way and scored another,
-# and the drift is invisible until someone reads both.
+# description and base priority in one table, so they cannot drift
 REQUEST_TYPES: dict[str, dict[str, Any]] = {
-    # The boundary between these two is where the first real run missed: "we want to run a
-    # pilot, who do we sign with" is a buying question, not a request to be shown the product.
-    # A demo_request asks to be scheduled a demonstration; everything about price, fit, pilots,
-    # contracts and onboarding is a sales_inquiry.
     "sales_inquiry": {
         "base_priority": 3,
         "desc": (
@@ -193,29 +165,17 @@ REQUEST_TYPES: dict[str, dict[str, Any]] = {
     },
 }
 
-# Two labels the model never produces. A message the gate stopped still has to appear in the
-# same confusion matrix as one the model classified, or a phishing mail that slipped through to
-# the classifier would be scored as a merely mediocre `billing` prediction instead of the miss
-# it is.
+# gate outcomes score in the same confusion matrix as model labels
 GATE_LABELS = ("ignored", "quarantined")
 
 BRAIN = HERE.parent / "company_brain" / "out" / "brain.md"
-# Only the facts that help place an email. A licence and an install command are true and
-# useless here, and every word of a rubric is charged on every call and pushes the router's
-# difficulty score up.
+# only the facts that help place an email; every rubric word is charged
 BRAIN_KEYS = ("name", "tagline", "description", "capability", "integration")
 BRAIN_LINES = 8
 
 
 def company_context() -> list[str]:
-    """A few facts from agent 1's document, if that agent has been run.
-
-    Knowing what the company sells is what separates "a pitch aimed at us" from "a question
-    about our product", and those two land in different halves of the taxonomy. If
-    company_brain/out/brain.md does not exist the rubric simply omits the block: the
-    taxonomy alone classifies this inbox correctly, and a tutorial should not require the
-    previous tutorial to have been run.
-    """
+    """Optional: the rubric omits the block when company_brain has not been run."""
     if not BRAIN.exists():
         return []
     facts = []
@@ -229,8 +189,7 @@ def company_context() -> list[str]:
 
 
 def classify_rubric() -> str:
-    """The rubric goes in a system message, so keep it short: it is charged on every call and
-    it nudges the router's difficulty score upward past ~200 words."""
+    """Kept short: charged on every call, and the router's score climbs past ~200 words."""
     lines = ["Classify one inbound email for a CRM. Reply with JSON only.", ""]
     lines.append("request_type is exactly one of:")
     for name, spec in REQUEST_TYPES.items():
@@ -255,11 +214,6 @@ def classify_rubric() -> str:
     return "\n".join(lines)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Accounts
-# ─────────────────────────────────────────────────────────────────────────────
-
-
 @dataclass
 class Account:
     account_id: str
@@ -271,9 +225,7 @@ class Account:
 
     @property
     def label(self) -> str:
-        """The tokens that identify this company by name, minus the ones every freight company
-        shares. `Globex Freight` is impersonated as `Globex Billing`; `Freight` is not what a
-        reader recognises, and matching on it would flag half the inbox."""
+        """The name token minus the words every freight company shares."""
         generic = {
             "freight",
             "logistics",
@@ -313,21 +265,12 @@ def account_index(accounts: list[Account]) -> dict[str, Account]:
     return {domain: acc for acc in accounts for domain in acc.domains}
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Reading the mailbox
-# ─────────────────────────────────────────────────────────────────────────────
-
 _FWD_MARKER = re.compile(r"^-{2,}\s*Forwarded message\s*-{2,}\s*$", re.MULTILINE | re.IGNORECASE)
 _SUBJECT_PREFIX = re.compile(r"^\s*(?:(?:re|fw|fwd|aw|sv)\s*(?:\[\d+\])?\s*:\s*)+", re.IGNORECASE)
 
 
 def unwrap_forward(body: str) -> tuple[str, bool]:
-    """Return the forwarded message, not the note wrapped around it.
-
-    A colleague forwarding a customer's complaint has not written a new inbound request. The
-    text that matters is below the marker, and taking it means the forward hashes to the same
-    body as the original and is dropped instead of opening a second thread about one problem.
-    """
+    """The forwarded message, not the note around it, so a forward hashes like the original."""
     match = _FWD_MARKER.search(body)
     if not match:
         return body, False
@@ -341,13 +284,7 @@ def norm_id(value: str | None) -> str:
 
 
 def thread_key(msg: dict[str, Any], domain: str, sent_at: str) -> str:
-    """Which conversation this message belongs to.
-
-    References carries the whole ancestry and its first entry is the root, so it survives a
-    client that rewrites In-Reply-To and a reply sent from a phone. The last resort is a hash
-    of who wrote, about what, on which day: gateways and web forms do strip Message-ID, and a
-    thread with no key at all would insert a fresh CRM row for every message.
-    """
+    """References root, then In-Reply-To, then Message-ID, else a hash of sender, subject, day."""
     refs = msg.get("references") or []
     for candidate in (refs[0] if refs else None, msg.get("in_reply_to"), msg.get("message_id")):
         key = norm_id(candidate)
@@ -383,14 +320,11 @@ def read_inbox(path: Path) -> list[Message]:
             body = decode_qp(body)
         body, _ = unwrap_forward(body)
         body = strip_quoted(body)
-        # Scrubbed here, at the edge, rather than in front of the model: the local database is
-        # a copy of the inbox that outlives it, and a card number in a support thread is not
-        # something a CRM has any reason to keep.
+        # scrubbed at the edge: the database outlives the inbox
         body, body_counts = scrub(body)
         subject, subject_counts = scrub(decode_header(raw.get("subject", "")))
         sent_at = parse_date(raw["date"])
-        # Gateways and web forms strip Message-ID. Two such messages must not share the empty
-        # string as a primary key, or the second silently replaces the first.
+        # two messages without a Message-ID must not share primary key ''
         message_id = norm_id(raw.get("message_id")) or (
             "synth:" + content_hash(f"{sender}|{sent_at}|{body}")[:32]
         )
@@ -415,10 +349,6 @@ def read_inbox(path: Path) -> list[Message]:
     return out
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# The gate: what never reaches a model
-# ─────────────────────────────────────────────────────────────────────────────
-
 _BOUNCE_SENDER = re.compile(r"^(mailer-daemon|postmaster|no-?reply)@")
 _BOUNCE_SUBJECT = re.compile(
     r"^\s*(undeliverable|delivery status notification|mail delivery (failed|subsystem))",
@@ -430,12 +360,7 @@ _CONFUSABLE_SUFFIXES = ("-secure", "-billing", "-support")
 
 
 def is_machine_mail(msg: Message) -> str:
-    """Auto-replies, bulk mail and bounces, recognised from headers a sender sets themselves.
-
-    Checked before anything else and answered with a row, not an exception: an out-of-office is
-    an ordinary thing for an inbox to receive, and three of them in a row raising would be
-    classified as a stall, which is an alert.
-    """
+    """Answered with a row, not an exception: three raises in a row would read as a stall."""
     if msg.auto_submitted and msg.auto_submitted != "no":
         return "auto_reply"
     if msg.bulk:
@@ -446,8 +371,7 @@ def is_machine_mail(msg: Message) -> str:
 
 
 def registrable(host: str) -> str:
-    """The last two labels of a host. Good enough for the single-label TLDs in this inbox; a
-    real deployment wants the public suffix list, or `mail.example.co.uk` reads as `co.uk`."""
+    """Last two labels; a real deployment wants the public suffix list."""
     parts = host.lower().strip(".").split(".")
     return ".".join(parts[-2:]) if len(parts) >= 2 else host.lower()
 
@@ -465,16 +389,7 @@ def levenshtein(a: str, b: str) -> int:
 
 
 def phishing_flags(msg: Message, accounts: list[Account], known: set[str]) -> list[str]:
-    """Four cheap checks for a message pretending to be from someone we do business with.
-
-    None of them reads the message's argument, which is the point: a lure is written to be
-    convincing, and a model asked whether it is convincing will often agree. Every rule here
-    compares two facts the sender cannot make agree -- the name they display against the domain
-    they sent from, the domain they sent from against a domain we already know, the link
-    against the sender, the reply address against the from address.
-
-    Returns rule names, never message content: these end up as a count on a node.
-    """
+    """Compares facts the sender cannot make agree; returns rule names, never content."""
     flags: list[str] = []
     base = msg.sender_domain.partition(".")[0]
 
@@ -508,31 +423,19 @@ def phishing_flags(msg: Message, accounts: list[Account], known: set[str]) -> li
     return flags
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# What the record says
-# ─────────────────────────────────────────────────────────────────────────────
-
 _URGENT = re.compile(r"\b(urgent|down|outage|asap)\b", re.IGNORECASE)
 
 
 def priority_of(request_type: str, kind: str, subject: str, msg_count: int) -> int:
-    """Priority is computed, not asked for.
-
-    A model that returns a number returns a slightly different one next week, from a different
-    model, for the same email, and nobody can say why one thread is a 4. Every term here is
-    visible in the row it scores, so a sales lead can be told exactly why their thread sits
-    below an outage, and the same inputs always give the same number -- which is also what
-    makes re-running the inbox a zero-row diff instead of a churn of priorities.
-    """
+    """Computed, not asked for: the same inputs always give the same number."""
     score = REQUEST_TYPES[request_type]["base_priority"]
-    score += kind == "customer"  # someone who already pays is not a lead
-    score += bool(_URGENT.search(subject))  # their word for it, not ours
-    score += msg_count >= 3  # a thread nobody closed is a thread going wrong
+    score += kind == "customer"
+    score += bool(_URGENT.search(subject))
+    score += msg_count >= 3
     return max(1, min(5, score))
 
 
 def next_action(request_type: str, status: str, account: Account | None) -> str:
-    """One sentence a human can act on. Suggested only: this agent has no send path."""
     if status == "quarantined":
         return "hold for security review, do not reply"
     if status == "ignored":
@@ -560,11 +463,6 @@ def next_action(request_type: str, status: str, account: Account | None) -> str:
     }.get(request_type, "triage by hand before any reply")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# The run
-# ─────────────────────────────────────────────────────────────────────────────
-
-
 async def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument(
@@ -584,10 +482,7 @@ async def main() -> int:
     by_domain = account_index(accounts)
 
     if args.forget:
-        # No model, no network, no task scope. An erasure request is answered from the local
-        # store or it is not answered, and making it depend on a provider key would mean the
-        # one operation a person is entitled to can fail for a reason that is none of their
-        # business.
+        # no model, no network, no task scope: erasure must not depend on a provider key
         try:
             forget(db, args.forget, by_domain)
             return 0
@@ -595,7 +490,6 @@ async def main() -> int:
             db.close()
 
     if args.resume and args.run is None:
-        # A resumed run reads the inbox the failed run was reading, not the default one.
         row = db.execute("SELECT inbox FROM run WHERE task_id=?", (args.resume,)).fetchone()
         if row is None:
             print(f"  no run recorded under {args.resume}")
@@ -624,24 +518,19 @@ async def main() -> int:
                 (task_id, utc_iso(), "running", run),
             )
 
-            # ── fetch ────────────────────────────────────────────────────────
             with clients.anthropic.step("fetch") as s:
                 messages = read_inbox(inbox)
                 kept, duplicates, redactions = [], 0, 0
                 for msg in messages:
                     twin = None
+                    # an empty body is not a duplicate of every other empty body
                     if msg.body:
-                        # An empty body -- a reply that was all quoted history, an attachment
-                        # with no text -- matches every other empty body. That is not a
-                        # duplicate of anything, so the check is skipped for it.
                         twin = db.execute(
                             "SELECT message_id FROM message WHERE body_hash=? AND message_id<>?",
                             (msg.body_hash, msg.message_id),
                         ).fetchone()
                     if twin is not None:
-                        # The same words under a new Message-ID: a forward, or the same
-                        # complaint sent to two of our addresses. Threading alone would open a
-                        # second record for one problem, and a person would answer it twice.
+                        # same words under a new id: a forward, or one complaint sent twice
                         duplicates += 1
                         continue
                     kept.append(msg)
@@ -687,7 +576,6 @@ async def main() -> int:
                     f"{duplicates} dropped as duplicate, {redactions} redactions"
                 )
 
-            # ── gate ─────────────────────────────────────────────────────────
             with clients.anthropic.step("gate") as s:
                 known_domains = set(by_domain)
                 to_classify: list[Message] = []
@@ -700,10 +588,7 @@ async def main() -> int:
                     else:
                         flags = phishing_flags(msg, accounts, known_domains)
                         if len(flags) >= 2:
-                            # Two independent rules agreeing is the threshold because any one
-                            # of them alone has an innocent explanation: a marketing platform
-                            # really does set Reply-To elsewhere. Quarantine costs zero LLM
-                            # calls, which is the other reason the gate runs first.
+                            # two independent rules: any one alone has an innocent explanation
                             quarantined += 1
                             gate = "quarantined"
                         else:
@@ -734,7 +619,6 @@ async def main() -> int:
                     f"{quarantined} quarantined, {flagged_once} flagged once"
                 )
 
-            # ── classify ─────────────────────────────────────────────────────
             classified = cached = failed = 0
             for msg in to_classify:
                 done = db.execute(
@@ -753,11 +637,7 @@ async def main() -> int:
                     f"Messages in this thread: {thread_size}\n\n"
                     f"{msg.body}"
                 )
-                # One name for every message, the id in an attribute: a hundred fan-out steps
-                # under one name read as one row in a graph view rather than a hundred. The id
-                # is a hash, because a node name is part of the graph -- and of the telemetry
-                # when a key is set -- whether or not content capture is on, and a subject line
-                # is content.
+                # one node name for the fan-out; the id is a hash because a node name is telemetry
                 try:
                     with clients.anthropic.step("classify") as s:
                         s.set_attribute("message", short_hash(msg.message_id))
@@ -804,14 +684,10 @@ async def main() -> int:
                             )
                         )
                 except ItemError:
-                    # One message failing is not the inbox failing, so the loop goes on and the
-                    # thread lands in review. The node is still marked failed, so three in a
-                    # row -- a provider outage rather than a bad reply -- raises the stall
-                    # alert it should.
+                    # one message failing is not the inbox failing; the node is still marked failed
                     failed += 1
             print(f"  classify: {classified} new, {cached} cached, {failed} failed")
 
-            # ── resolve and upsert ───────────────────────────────────────────
             with clients.anthropic.step("resolve-and-upsert") as s:
                 touched = sorted({m.thread_key for m in kept})
                 before = snapshot(db)
@@ -820,10 +696,7 @@ async def main() -> int:
                 after = snapshot(db)
                 inserted = sorted(set(after) - set(before))
                 updated = sorted(k for k in before if k in after and before[k] != after[k])
-                # The upsert is applied a second time to the same inputs, and the second pass
-                # has to change nothing. That is the idempotence claim stated as a test rather
-                # than a comment, and it holds on the first run too, so the property is checked
-                # every time instead of only when somebody remembers to re-run.
+                # applied twice on purpose: the second pass must change nothing
                 apply_rows(db, rows, task_id)
                 repeat = snapshot(db)
                 churn = sorted(k for k in after if after[k] != repeat.get(k))
@@ -848,7 +721,6 @@ async def main() -> int:
                     f"(second pass changed {len(churn)})"
                 )
 
-            # ── report ───────────────────────────────────────────────────────
             score = report(db, run, touched, clients.anthropic)
 
             stats = {
@@ -896,8 +768,7 @@ async def main() -> int:
                 "export": display(OUT / "crm.csv"),
             }
         )
-        # A precision over three threads is one miss away from any value. Below ten labelled
-        # threads the figure is printed but not gated; alerting on it would be alerting on noise.
+        # under ten labelled threads the precision is printed but not gated
         graded = sum(n for _, _, _, n in score["per_class"])
         card.gate(
             "macro precision >= 0.85",
@@ -928,12 +799,7 @@ async def main() -> int:
 
 
 def validate(data: Any, body: str) -> dict[str, Any]:
-    """Turn the model's reply into a record, or into a request for a human.
-
-    Every failure here is an ordinary outcome with a row at the end of it, never an exception.
-    A fabricated quote, a class outside the taxonomy and a model that says it is unsure are all
-    the same event from the inbox's point of view: this one is not safe to file automatically.
-    """
+    """Every failure here is a row for a person, never an exception."""
     data = data if isinstance(data, dict) else {}
     request_type = str(data.get("request_type", "")).strip().lower()
     quote = str(data.get("quote", "")).strip()
@@ -946,17 +812,11 @@ def validate(data: Any, body: str) -> dict[str, Any]:
     if request_type not in REQUEST_TYPES:
         request_type, reason = "other", "schema_invalid"
     elif not quote_is_verbatim(quote, body):
-        # The one guard worth its cost. A model that has to copy a sentence out of the message
-        # cannot invent the reason for its answer without inventing a string that is checkably
-        # not there, and checking it is one function call rather than a second model.
         reason = "quote_not_verbatim"
     elif confidence < CONFIDENCE_FLOOR:
         reason = "low_confidence"
     elif bool(data.get("suspicious")):
         reason = "model_flagged"
-    # A quote that failed the check is not evidence and is not kept. One that passed is kept
-    # even when the thread goes to review: the person triaging it wants the sentence the model
-    # answered from more than anyone.
     return {
         "request_type": request_type,
         "confidence": confidence,
@@ -969,15 +829,7 @@ def validate(data: Any, body: str) -> dict[str, Any]:
 
 
 def build_row(db: sqlite3.Connection, key: str, by_domain: dict[str, Account]) -> tuple:
-    """One CRM record from every message in a thread. Code, start to finish.
-
-    The thread's newest message that passed the gate decides what the record says, because a
-    conversation that has moved from a question to a pilot is about the pilot. An out-of-office
-    or a bounce that lands on an open thread still counts in msg_count and still moves
-    last_msg_at, but it does not get to rewrite what the thread is about. The account comes
-    from the domain, not from the model: a customer writing from their second domain is still
-    that customer, and no amount of prompt is a substitute for the lookup.
-    """
+    """Led by the newest message that passed the gate; the account is a domain lookup."""
     msgs = db.execute(
         "SELECT * FROM message WHERE thread_key=? ORDER BY sent_at, message_id", (key,)
     ).fetchall()
@@ -1007,8 +859,6 @@ def build_row(db: sqlite3.Connection, key: str, by_domain: dict[str, Account]) -
         request_type = verdict["request_type"]
         confidence = verdict["confidence"]
         summary, quote, language = verdict["summary"], verdict["quote"], verdict["language"]
-        # A single phishing rule is not enough to refuse the message, and too much to file it
-        # unread. The model still runs, and a person still looks.
         status = "needs_review" if (verdict["review_reason"] or flags) else "open"
 
     kind = account.kind if account else "unknown"
@@ -1042,7 +892,6 @@ def apply_rows(db: sqlite3.Connection, rows: list[tuple], task_id: str) -> None:
 
 
 def snapshot(db: sqlite3.Connection) -> dict[str, tuple]:
-    """Every record as it stands, so a diff is a comparison rather than a row count."""
     columns = ", ".join(RECORD_COLUMNS)
     return {
         r["thread_key"]: tuple(r[c] for c in RECORD_COLUMNS)
@@ -1051,13 +900,7 @@ def snapshot(db: sqlite3.Connection) -> dict[str, tuple]:
 
 
 def export_csv(db: sqlite3.Connection, path: Path) -> None:
-    """Write to a temporary file and rename, so nothing ever reads a half-written CRM.
-
-    os.replace is atomic on the same filesystem. Writing in place means a reader who opens the
-    file during the export sees a file that is valid CSV and wrong, which is worse than an
-    error. The export carries the record only, not which run last touched it, so an unchanged
-    inbox produces a byte-identical file.
-    """
+    """Write then rename, so no reader sees a half-written file."""
     columns = ("thread_key", *RECORD_COLUMNS)
     tmp = path.with_suffix(path.suffix + ".tmp")
     with tmp.open("w", newline="") as fh:
@@ -1070,13 +913,7 @@ def export_csv(db: sqlite3.Connection, path: Path) -> None:
 
 
 def report(db: sqlite3.Connection, run: int, touched: list[str], client) -> dict[str, Any]:
-    """Score this run's threads against what a person said they were.
-
-    Precision and recall per class, not accuracy: an inbox is mostly a handful of common
-    classes, and a classifier that answered `support` to everything would score well on
-    accuracy and be useless. Undefined values -- a class nothing was assigned to, a class
-    nothing expected -- count as 1.0, because there is no error to charge for.
-    """
+    """Precision and recall per class, over labelled threads only."""
     with client.step("report") as s:
         spec = read_json(COMPANY / "crm_labels.json")
         expected: dict[str, dict[str, Any]] = {}
@@ -1090,9 +927,6 @@ def report(db: sqlite3.Connection, run: int, touched: list[str], client) -> dict
                 continue
             expected[row["thread_key"]] = label
 
-        # Only labelled threads are scored. A thread nobody has an opinion about is not
-        # evidence either way, and counting it as a false positive would make the score fall
-        # every time the inbox grows.
         predicted: dict[str, dict[str, Any]] = {}
         for key in touched:
             row = db.execute("SELECT * FROM crm WHERE thread_key=?", (key,)).fetchone()
@@ -1178,15 +1012,7 @@ def report(db: sqlite3.Connection, run: int, touched: list[str], client) -> dict
 
 
 def forget(db: sqlite3.Connection, sender: str, by_domain: dict[str, Account]) -> None:
-    """Erase one person from the store: their messages, what the model said about them, and any
-    record left with nothing behind it.
-
-    A CRM row that outlives its last message is the failure mode worth naming. It looks like an
-    ordinary record, so nobody deletes it, and it is the copy that gets exported to the next
-    system. Threads that still hold other people's messages keep a row, but the row is rebuilt
-    here and now from what remains: it may have been built from the message just deleted, and
-    "the next run will fix it" is a promise a thread nobody writes to again never collects on.
-    """
+    """Erase the sender's messages and classifications; rebuild kept rows, delete empty ones."""
     sender = sender.strip().lower()
     ids = [
         r["message_id"]

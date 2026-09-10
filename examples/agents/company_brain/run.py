@@ -9,10 +9,6 @@
 
 This makes real calls to Anthropic and costs a few cents. Set ANTHROPIC_API_KEY first.
 FLUXCOMPUTE_KEY is optional: with it, the run also appears in the hosted dashboard.
-
-The shape worth copying is not the prompt. It is that the model does one job here -- turning
-a paragraph into typed facts with a quote -- and code does everything else: what changed,
-which source wins, what to remove, and what to publish.
 """
 
 from __future__ import annotations
@@ -58,9 +54,7 @@ from _common import (  # noqa: E402
 HERE = Path(__file__).resolve().parent
 OUT = HERE / "out"
 
-# The most recent run's execution graph; tests/test_agent_examples.py asserts its shape (a
-# failure leaves a resumable llm_call node, and no node name or attribute carries content).
-LAST_GRAPH = None
+LAST_GRAPH = None  # tests/test_agent_examples.py asserts the shape of the last run's graph
 MAX_EXTRACTIONS_PER_RUN = 40
 
 SCHEMA_SQL = """
@@ -96,15 +90,12 @@ CREATE TABLE IF NOT EXISTS doc_version (
   added INTEGER, updated INTEGER, removed INTEGER, status TEXT, held_reason TEXT);
 """
 
-# Bump on any edit to EXTRACT_RUBRIC. Extractions are cached per (item, hash, prompt_version),
-# so a bump is what re-reads every source; without it a prompt fix would apply only to
-# whatever happened to change next.
+# bump on any edit to the rubric: extractions are cached per (item, hash, prompt_version)
 PROMPT_VERSION = 1
 
 
 def extract_rubric(schema: dict[str, Any]) -> str:
-    """The rubric goes in a system message, so keep it short: it is charged on every call and
-    it nudges the router's difficulty score upward past ~200 words."""
+    """Kept short: charged on every call, and the router's score climbs past ~200 words."""
     lines = ["Extract facts about a company from one document. Reply with JSON only.", ""]
     lines.append("Use ONLY these entity.attribute keys:")
     for entity, spec in schema["entities"].items():
@@ -127,11 +118,6 @@ def extract_rubric(schema: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Sources
-# ─────────────────────────────────────────────────────────────────────────────
-
-
 @dataclass
 class Item:
     source: str
@@ -152,12 +138,6 @@ _HEADING = re.compile(r"^##\s+(.+)$", re.MULTILINE)
 
 
 def chunk_markdown(path: str, text: str) -> list[tuple[str, str]]:
-    """Split a document at its second-level headings.
-
-    A whole-file chunk means a one-line edit to a long FAQ re-extracts the entire FAQ. Section
-    chunks mean one section is re-read and the rest cost nothing, which is most of why a
-    scheduled sync stays cheap.
-    """
     matches = list(_HEADING.finditer(text))
     if len(matches) < 2:
         return [(path, text)]
@@ -192,17 +172,11 @@ def collect_repo(root: Path, exclude: list[str]) -> list[Item]:
 
 
 def collect_email(path: Path, allowlist: list[str]) -> tuple[list[Item], int]:
-    """Read the inbox, keeping only senders a human put on the allowlist.
-
-    The allowlist is checked here, in code, before a model ever sees the text. An inbound
-    email is a stranger's writing: anything that reaches the extractor can try to talk it into
-    changing the company's own description of itself.
-    """
+    """The allowlist is checked here, before a model sees the text."""
     items, rejected = [], 0
     seen_bodies: set[str] = set()
     allowed = {a.lower() for a in allowlist}
     for msg in json.loads(path.read_text()):
-        # The address, whatever the display name in front of it says.
         _, sender, _ = split_address(msg["from"])
         if sender not in allowed:
             rejected += 1
@@ -213,12 +187,10 @@ def collect_email(path: Path, allowlist: list[str]) -> tuple[list[Item], int]:
         body = strip_quoted(body)
         body_hash = content_hash(body)
         if body_hash in seen_bodies:
-            continue  # a forward of a message we already have: same words, new id
+            continue
         seen_bodies.add(body_hash)
         subject = decode_header(msg["subject"])
-        # The sender is provenance, not content. It is on the allowlist by construction, the
-        # scrubber would redact it before the model saw it, and an item that carried it would
-        # count as a redaction that protected nobody.
+        # no From: line: the scrubber would redact it and count it
         items.append(
             Item(
                 "email",
@@ -234,20 +206,13 @@ def collect_brand(path: Path) -> list[Item]:
     return [Item("brand", path.name, path.read_text(), url=f"brand://{path.name}")]
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Facts
-# ─────────────────────────────────────────────────────────────────────────────
-
-
 def is_multi(schema: dict[str, Any], entity: str, attribute: str) -> bool:
     meta = schema["entities"].get(entity, {}).get("attributes", {}).get(attribute)
     return isinstance(meta, dict) and bool(meta.get("multi"))
 
 
 def fact_key(schema: dict[str, Any], entity: str, attribute: str, value: str) -> str:
-    """One key per fact. For an attribute that holds several values at once, the value is part
-    of the identity, so dropping one integration removes one fact. For a single-valued
-    attribute it is not, so a new price updates the fact instead of adding a second one."""
+    """The value is part of the key only for multi-valued attributes."""
     base = f"{entity}|{attribute}"
     if is_multi(schema, entity, attribute):
         base += f"|{normalize(value).lower()}"
@@ -259,11 +224,6 @@ def precedence_rank(schema: dict[str, Any], entity: str, attribute: str, source:
         if fnmatch.fnmatch(f"{entity}.{attribute}", pattern):
             return order.index(source) if source in order else -1
     return -1
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# The run
-# ─────────────────────────────────────────────────────────────────────────────
 
 
 async def main() -> int:
@@ -287,7 +247,6 @@ async def main() -> int:
     card = Scorecard("Company brain")
 
     if args.resume and args.version is None:
-        # A resumed run syncs the sources the failed run was syncing, not the default set.
         row = db.execute("SELECT version FROM run WHERE task_id=?", (args.resume,)).fetchone()
         if row is None:
             print(f"  no run recorded under {args.resume}")
@@ -313,7 +272,6 @@ async def main() -> int:
                 (task_id, utc_iso(), "running", version),
             )
 
-            # ── collect ──────────────────────────────────────────────────────
             repo_dir = COMPANY / f"repo_v{version}"
             brand_file = COMPANY / f"brand_v{version}.md"
             inbox = COMPANY / "inbox" / f"run{version}.json"
@@ -338,7 +296,6 @@ async def main() -> int:
                 s.set_attribute("items", len(brand_items))
                 s.set_output(json.dumps({"items": len(brand_items)}))
 
-            # ── diff ─────────────────────────────────────────────────────────
             with clients.anthropic.step("diff") as s:
                 known = {
                     r["item_id"]: r
@@ -346,11 +303,7 @@ async def main() -> int:
                 }
                 seen_now = {i.item_id: i for i in items}
                 hashes_now = {i.hash: i for i in items}
-                # "Processed" is an extraction row, not the hash on source_item. The hash is
-                # written in this step, before any extraction runs; if it were the marker, a
-                # run that failed halfway would report "0 changed" forever afterwards, which
-                # is the quiet way a sync agent dies. Keyed on prompt_version too, so bumping
-                # the rubric re-reads everything.
+                # done work is an extraction row, not a hash; a failed run must not read "0 changed"
                 extracted = {
                     (r["item_id"], r["content_hash"])
                     for r in db.execute(
@@ -365,8 +318,6 @@ async def main() -> int:
                 for item in items:
                     prior = known.get(item.item_id)
                     if prior is None:
-                        # A rename is the same bytes under a new id. Treating it as a delete
-                        # plus an add would tombstone facts that never went anywhere.
                         old = next(
                             (
                                 r
@@ -376,10 +327,7 @@ async def main() -> int:
                             None,
                         )
                         if old is not None:
-                            # Carry every table that keys on item_id. Missing one of them
-                            # silently drops the facts: the extraction no longer joins to its
-                            # source item, so reconcile sees the fact as unasserted and
-                            # removes it. A rename would then read as a deletion.
+                            # a rename: carry every table keyed on item_id, or its facts read as removed
                             for table in ("source_item", "extraction", "fact"):
                                 db.execute(
                                     f"UPDATE {table} SET item_id=? WHERE item_id=?",
@@ -399,10 +347,7 @@ async def main() -> int:
                         if len(changed) > MAX_EXTRACTIONS_PER_RUN:
                             deferred_ids.add(item.item_id)
                     if item.item_id in deferred_ids:
-                        # A deferred item keeps the hash and text it was last extracted from.
-                        # Its extraction row is keyed on that hash; advancing the hash now,
-                        # with no extraction to match it, would make reconcile read every fact
-                        # the item asserts as withdrawn and remove them all in this run.
+                        # a deferred item keeps its stored hash, or reconcile reads its facts as gone
                         db.execute(
                             "INSERT INTO source_item(item_id, source, external_id, content_hash,"
                             " text, url, first_seen_run, last_seen_run, status, missing_runs)"
@@ -476,16 +421,12 @@ async def main() -> int:
                     f" {len(gone)} missing" + (f", {deferred} deferred" if deferred else "")
                 )
 
-            # ── extract ──────────────────────────────────────────────────────
-            # Everything in `changed` has no extraction row for its current hash and prompt
-            # version: the diff step decided that, and there is nothing to re-check here.
             extracted = failed = redacted_items = 0
             for n, item in enumerate(changed, start=1):
                 clean, redactions = scrub(item.text)
                 if redactions:
                     redacted_items += 1
-                # Same name for every extraction, item id in an attribute: forty fan-out
-                # steps under one name read as one row in a graph view rather than forty.
+                # one node name for the fan-out; the item id is an attribute
                 try:
                     with clients.anthropic.step("extract") as s:
                         s.set_attribute("item", short_hash(item.item_id))
@@ -494,9 +435,7 @@ async def main() -> int:
                             s.set_attribute("redactions", sum(redactions.values()))
                         try:
                             if args.fail_at == n:
-                                # A model id that the provider retired. This is the failure
-                                # that actually happens in production, it is free, and
-                                # resume() fixes it by routing the same step to a live model.
+                                # a retired model id: the production failure resume() is for
                                 result = await call(
                                     clients.anthropic,
                                     rubric=rubric,
@@ -508,7 +447,7 @@ async def main() -> int:
                         except ItemError as exc:
                             s.set_attribute("error_code", exc.code)
                             s.set_output(json.dumps({"error": exc.code}))
-                            raise  # the step node must show as failed, not as done
+                            raise  # the step node must show as failed
                         card.record(result)
                         facts = validate_facts(result.data, clean, schema)
                         db.execute(
@@ -531,10 +470,7 @@ async def main() -> int:
                             json.dumps({"facts": len(facts), "tier": result.difficulty_label})
                         )
                 except ItemError as exc:
-                    # A provider error is not a property of the item, so it is not skipped and
-                    # recorded like a bad document would be. The run stops here, the task's
-                    # root node is marked failed in the graph, and the handler below shows
-                    # what recovery looks like.
+                    # a provider error is not a property of the item: stop the run and recover below
                     failed += 1
                     failure = (n, item, clean, exc.code)
                     break
@@ -543,7 +479,6 @@ async def main() -> int:
             if failure is not None:
                 raise ItemError(failure[3])
 
-            # ── reconcile, render, check ─────────────────────────────────────
             stats = reconcile(db, schema, task_id, version, clients.anthropic)
             doc_version = render(db, schema, task_id, version, stats, clients.anthropic)
             qa = run_qa(db, doc_version, clients.anthropic)
@@ -578,8 +513,6 @@ async def main() -> int:
         print(f"\n{graph_line(clients, task_id)}\n")
         return 0 if stats["status"] != "held" and qa["rate"] >= 0.9 else 1
     except ItemError:
-        # The task scope has exited and the root node is marked failed in the graph. What can
-        # be done about it depends on what failed.
         n, item, clean, code = failure
         db.execute(
             "UPDATE run SET finished_at=?, status='failed', stats_json=? WHERE task_id=?",
@@ -589,26 +522,16 @@ async def main() -> int:
         graph = clients.anthropic.get_task_graph(task_id)
         failed_calls = [node for node in graph.failed_nodes() if node.node_type == "llm_call"]
         if not failed_calls:
-            # parse_failed: the provider answered twice and neither reply was JSON. Both calls
-            # succeeded as far as the graph knows, so there is no failed node to resume. The
-            # item has no extraction row, and the next run will simply try it again.
+            # parse_failed: both calls succeeded, so there is no failed node to resume
             print("  the model returned no JSON for that item twice; nothing to resume.")
             print(f"  Try again from a new process:\n    python run.py --resume {task_id}")
             print(f"\n{graph_line(clients, task_id)}\n")
             return 1
-        # A provider failure is a failed llm_call node inside the failed step. While this
-        # process still holds the graph, one SDK call retries that step, with routing free to
-        # pick a live model. The retry lands in the same graph, linked to the node it replaces.
         print("  retrying that one step with client.resume() ...")
-        # resume() sends no system prompt of its own, so the instruction carries the rubric and
-        # the document. Two things it does that this loop does not: it prepends a summary of
-        # every step that finished before the failure (the verbatim-quote check is what keeps
-        # another document's facts off this one), and it samples at the SDK's own defaults
-        # rather than this loop's temperature and token cap. It is a retry of the step, not a
-        # byte-for-byte replay of the call.
+        # resume() prepends a summary of finished steps and samples at the SDK defaults;
+        # the quote check keeps other documents' facts off this one
         instruction = f"{rubric}\n\n<document>\n{clean}\n</document>"
-        # Name the node. The step that wrapped the call is failed too, and resume() would
-        # otherwise pick whichever unresolved failure is most recent.
+        # name the node: the wrapping step is failed too
         failed_call = failed_calls[-1]
         try:
             resp = await clients.anthropic.resume(
@@ -620,8 +543,6 @@ async def main() -> int:
             print(f"  Try again from a new process:\n    python run.py --resume {task_id}")
             return 1
         except Exception as exc:
-            # The retry is routed to a live model, so if it fails too the provider itself is
-            # refusing us -- most often a bad or expired ANTHROPIC_API_KEY.
             print(f"  retry also failed ({type(exc).__name__}); check ANTHROPIC_API_KEY")
             return 1
         db.execute(
@@ -658,12 +579,7 @@ async def main() -> int:
 
 
 def validate_facts(data: Any, source_text: str, schema: dict[str, Any]) -> list[dict[str, Any]]:
-    """Keep only facts the document actually supports.
-
-    Every claim must carry a quote that appears in the source, and a key from the vocabulary.
-    This is the whole anti-fabrication mechanism, and it is four lines of code rather than a
-    sentence in the prompt asking the model to be careful.
-    """
+    """Every fact needs a key from the vocabulary and a quote found in the source."""
     out: list[dict[str, Any]] = []
     for raw in (data or {}).get("facts", []):
         key = str(raw.get("key", ""))
@@ -681,7 +597,6 @@ def validate_facts(data: Any, source_text: str, schema: dict[str, Any]) -> list[
 
 
 def reconcile(db, schema, task_id, version, client) -> dict[str, Any]:
-    """Decide what the brain now says. No model is involved."""
     with client.step("reconcile") as s:
         rows = db.execute(
             "SELECT e.item_id, e.facts_json, i.source FROM extraction e"
@@ -707,13 +622,9 @@ def reconcile(db, schema, task_id, version, client) -> dict[str, Any]:
                 if held is None:
                     proposed[key] = candidate
                     continue
-                # The higher-ranked source wins; on a tie, the first one seen. The rows come
-                # back in no particular order, so the record of a disagreement cannot depend
-                # on which side happened to be read first.
+                # record the loser whichever order the rows came back in
                 winner, loser = (candidate, held) if rank > held["rank"] else (held, candidate)
                 if rank != held["rank"] and normalize(winner["value"]) != normalize(loser["value"]):
-                    # Two sources disagree and one of them is authoritative here. Record the
-                    # loser: an unexplained overwrite is indistinguishable from a bug.
                     conflicts += 1
                     db.execute(
                         "INSERT INTO conflict VALUES (?,?,?,?,?,?,?)",
@@ -763,20 +674,19 @@ def reconcile(db, schema, task_id, version, client) -> dict[str, Any]:
             )
 
         never_absence = set(schema["removal"].get("never_absence_remove", []))
-        # Removals are decided first and applied second, so that the anomaly check below can
-        # look at the whole set before any of it happens.
+        # removals are decided first and applied second, so the anomaly check sees the whole set
         removals: list[tuple[str, tuple]] = []
         for key, row in existing.items():
             if key in proposed or row["status"] != "active":
                 continue
             if row["source"] in never_absence:
-                continue  # an email that is not in this window has not been retracted
+                continue  # an email outside this window has not been retracted
             item = db.execute(
                 "SELECT status FROM source_item WHERE item_id=?", (row["item_id"],)
             ).fetchone()
             item_present = item is not None and item["status"] == "present"
             if item_present:
-                # The document still exists and stopped saying it. That is a decision.
+                # still present and no longer asserting: removed this run, no grace
                 reason = "no longer stated by its source"
                 removals.append(
                     (
@@ -786,8 +696,7 @@ def reconcile(db, schema, task_id, version, client) -> dict[str, Any]:
                     )
                 )
             else:
-                # The document is gone. A deleted file and a failed fetch look the same for
-                # one run, so wait before believing it.
+                # gone: a deleted file and a failed fetch look alike for one run
                 missing = row["missing_runs"] + 1
                 if missing >= schema["removal"]["grace_runs"]:
                     removals.append(
@@ -804,8 +713,7 @@ def reconcile(db, schema, task_id, version, client) -> dict[str, Any]:
         threshold = schema["removal"]["anomaly_threshold"]
         status, held_reason = "ok", ""
         if active_before and removed / active_before > threshold:
-            # Held means held: none of the removals is applied and nothing is published. The
-            # fact table keeps what it had, and the next run decides again from scratch.
+            # held: none of the removals is applied and nothing is published
             status, held_reason = (
                 "held",
                 f"{removed} of {active_before} facts would be removed (> {threshold:.0%})",
@@ -841,12 +749,10 @@ def reconcile(db, schema, task_id, version, client) -> dict[str, Any]:
 
 
 def render(db, schema, task_id, version, stats, client) -> int:
-    """Write brain.md and a changelog. Deterministic, so a re-render is free and diffable."""
     with client.step("render") as s:
         prior = db.execute("SELECT * FROM doc_version ORDER BY version DESC LIMIT 1").fetchone()
         if stats["status"] == "held":
-            # Nothing is published from a held run. The document on disk stays the last one
-            # that passed, and the gate at the end says why.
+            # nothing is published from a held run
             s.set_attribute("held", True)
             s.set_output(json.dumps({"held": True}))
             print("  render: held, brain.md left as it was")
@@ -928,12 +834,7 @@ def render(db, schema, task_id, version, stats, client) -> int:
 
 
 def run_qa(db, doc_version: int, client) -> dict[str, Any]:
-    """Ask the questions a human would ask, and check the answers by substring.
-
-    No model judges this. A model asked whether its own document is right will say yes.
-    The questions that must NOT be answerable are the useful half: they catch a brain that
-    invents, and a brain that keeps a fact after its source dropped it.
-    """
+    """Substring checks against qa.json; no model judges the document."""
     with client.step("qa") as s:
         spec = json.loads((COMPANY / "qa.json").read_text())
         doc = (OUT / "brain.md").read_text().lower()
@@ -941,7 +842,7 @@ def run_qa(db, doc_version: int, client) -> dict[str, Any]:
         passed, failures = 0, []
         for q in spec["questions"]:
             expect = q["expect"][key]
-            if isinstance(expect, dict):  # {"absent": [...]} -- must NOT be answerable
+            if isinstance(expect, dict):
                 ok = not any(n.lower() in doc for n in expect["absent"])
             else:
                 ok = all(n.lower() in doc for n in expect)

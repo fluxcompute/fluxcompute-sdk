@@ -1,22 +1,8 @@
-# The closed vocabulary of facts the brain will hold, and who wins a disagreement.
-#
-# Why a closed vocabulary: without one, the same fact arrives as "price of the starter plan",
-# "Starter tier cost" and "starter_monthly_usd" on three runs, and the reconciler sees three
-# facts instead of one changing fact. The model must choose a key from this list; anything
-# else is a schema failure, retried once, then recorded and skipped.
-#
-# Why precedence is data: it is the only place a human decides which source is authoritative
-# for which subject. It is not in a prompt, so no email can argue its way into winning.
+# Fact vocabulary, source precedence and removal rules for company_brain.
 
 version: "2026-09-07.1"
 
-# Files that are collected but never extracted from.
-#
-# A changelog records what used to be true. Extracting from it produces facts that outlive
-# their own removal: the 2.4.0 section still says "integrated with Kestrel" long after 2.5.0
-# removed it, and since that section never changes, nothing would ever retract the fact.
-# The rule is general: a brain states what is true now, so its sources must be documents that
-# describe the present.
+# collected but never extracted: a changelog states what used to be true
 exclude:
   - "CHANGELOG.md"
   - ".env.example"
@@ -24,27 +10,24 @@ exclude:
   - "*.jpg"
   - "*.pem"
 
-# Sources, most authoritative last in each precedence list.
 sources:
   repo: "The company's own repository. Authoritative for how the product works."
   brand: "brand.md. Authoritative for voice, naming and positioning."
   email: "Announcements from allowlisted senders. Fastest, least reviewed."
 
-# Only these senders can produce facts. Everything else is collected and ignored.
-# An inbound email is untrusted text: an allowlist in code is what stops a stranger
-# rewriting the company's own description of itself.
+# only these senders produce facts
 email_allowlist:
   - priya@northwind.example.com
   - hr@northwind.example.com
   - ops@northwind.example.com
 
-# Precedence per attribute namespace. First match wins; later entries beat earlier ones.
+# first matching pattern wins; later sources in a list beat earlier ones
 precedence:
-  "pricing.*": [repo, brand, email]      # a price change is announced by email before the repo catches up
-  "company.tagline": [repo, email, brand]   # marketing changes brand.md before the README
+  "pricing.*": [repo, brand, email]
+  "company.tagline": [repo, email, brand]
   "company.brand_colour": [repo, email, brand]
-  "brand.*": [repo, email, brand]        # brand.md is the last word on voice
-  "*": [email, brand, repo]              # otherwise the repository is authoritative
+  "brand.*": [repo, email, brand]
+  "*": [email, brand, repo]
 
 entities:
   company:
@@ -86,23 +69,11 @@ entities:
     attributes:
       planned: {desc: "Something the company has said it plans to build.", multi: true}
 
-# A source that stops asserting a fact does not immediately delete it: a failed fetch and a
-# real deletion look identical for one run. Two consecutive absences make it a removal.
+# a present source that stops asserting a fact removes it that run; a vanished source waits
+# grace_runs
 removal:
-  # Two different disappearances, two different rules.
-  #
-  # A source item still exists but no longer asserts a fact (Kestrel drops out of
-  # integrations.md): that is a decision, visible in a diff, and the fact is removed in the
-  # same run. No grace, because there is nothing ambiguous about it.
-  #
-  # A source item is gone entirely (docs/security.md is deleted, or a fetch failed and
-  # returned nothing): that could be a deletion or an outage, and they look identical for one
-  # run. Wait for grace_runs consecutive absences before removing.
   grace_runs: 2
-  # If one run would remove more than this share of active facts, publish is held for a human.
-  # A source returning nothing at all is the usual cause, and it should never silently empty
-  # the company's own description of itself.
+  # above this share of removals in one run, nothing is published
   anomaly_threshold: 0.25
-  # Email is append-only in the world: a message that is not in this run's window has not
-  # been retracted. Only a later, higher-precedence statement supersedes an email fact.
+  # an email outside the window has not been retracted
   never_absence_remove: [email]

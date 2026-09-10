@@ -1,16 +1,5 @@
-"""The worked agents under examples/agents/ run on every commit, so they cannot go stale.
-
-The agents run with a real provider key and have no mock mode of their own. The provider
-seam is patched here instead, from the outside, the same way the SDK's own tests do it
-(`patch("fluxcompute.client.anthropic")`): real classifier, real graph recorder, fake provider
-response. What that buys is a test that fails when the SDK's behaviour changes under the
-agents, not one that passes because everything interesting was stubbed.
-
-The scripted provider answers each extraction from the document it was given, so the verbatim
-quote check is genuinely exercised rather than fed pre-agreed strings.
-
-No FluxCompute key is set unless a test sets one: the default path is the SDK-only one.
-"""
+"""The provider is patched at fluxcompute.client.anthropic, so the classifier and the graph
+recorder are real. No FluxCompute key is set unless a test sets one."""
 
 from __future__ import annotations
 
@@ -31,12 +20,7 @@ AGENTS = ROOT / "examples" / "agents"
 
 
 def _load(name: str, path: Path, monkeypatch):
-    """Execute a script as a module under `name`, registered only for the test's lifetime.
-
-    The agents import `_common` by bare name, so it has to be in sys.modules while run.py
-    executes; going through monkeypatch means it is gone again at teardown instead of leaking
-    into every test collected after this file.
-    """
+    """monkeypatch.setitem, so _common is gone again at teardown."""
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
     monkeypatch.setitem(sys.modules, name, module)
@@ -45,20 +29,11 @@ def _load(name: str, path: Path, monkeypatch):
 
 
 def _load_common(monkeypatch):
-    """_common with its .env loader disabled.
-
-    require_keys() reads examples/agents/.env, which is exactly where the module tells a user
-    to put a real FLUXCOMPUTE_KEY. The fixtures below delete that variable so the SDK-only
-    path is what runs; a loader that put it back would turn every test into a live one.
-    """
+    """The .env loader would put a real FLUXCOMPUTE_KEY back after the fixtures delete it."""
     common = _load("_common", AGENTS / "_common.py", monkeypatch)
     monkeypatch.setattr(common, "load_dotenv", lambda *args, **kwargs: None)
     return common
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# A provider that answers from the document, so quote validation is real
-# ─────────────────────────────────────────────────────────────────────────────
 
 FACT_RULES: list[tuple[str, str, str | None]] = [
     (r"trading name|Northwind Logistics", "company.name", "Northwind Logistics Cloud"),
@@ -96,8 +71,7 @@ FACT_RULES: list[tuple[str, str, str | None]] = [
     (r"(Multi-leg planning for intermodal shipments)", "roadmap.planned", None),
 ]
 
-# A fact whose quote is not in the document. validate_facts must drop it, and the brain must
-# never render it: this is the fabricated-citation case, present in every extraction.
+# a quote not in the document; validate_facts must drop it
 FABRICATED = {
     "key": "company.description",
     "value": "the world's most advanced freight platform",
@@ -106,7 +80,7 @@ FABRICATED = {
 
 
 def _text_of(content) -> str:
-    # After the SDK's cache manager, message content is a list of blocks, not a string.
+    # after the cache manager, content is a list of blocks
     if isinstance(content, str):
         return content
     return " ".join(b.get("text", "") for b in content if isinstance(b, dict))
@@ -117,7 +91,6 @@ def _document_from(kwargs: dict) -> str:
 
 
 def _everything_sent(kwargs: dict) -> str:
-    """Every message in the request, so a test can ask what the provider was shown."""
     parts = [_text_of(kwargs["system"])] if isinstance(kwargs.get("system"), (str, list)) else []
     parts += [_text_of(m["content"]) for m in kwargs["messages"]]
     return "\n".join(parts)
@@ -179,11 +152,6 @@ async def _noop():
 
 @pytest.fixture
 def brain(tmp_path, monkeypatch):
-    """The company brain, wired to a scripted provider and a temporary output directory.
-
-    No FluxCompute key: this is the SDK-only path, so telemetry is off and no emitter exists.
-    syspath_prepend is undone at teardown, which also undoes the agent's own sys.path insert.
-    """
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     monkeypatch.delenv("FLUXCOMPUTE_KEY", raising=False)
     monkeypatch.delenv("FLUX_CONTENT_CAPTURE", raising=False)
@@ -207,25 +175,17 @@ async def _run(brain, *argv: str) -> int:
     return await brain.module.main()
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# What the walkthrough promises
-# ─────────────────────────────────────────────────────────────────────────────
-
-
 async def test_first_sync_publishes_a_document_with_sources(brain, capsys):
     assert await _run(brain, "--version", "1") == 0
     doc = (brain.out / "brain.md").read_text()
     assert "Northwind Logistics Cloud" in doc
     assert "`[repo]`" in doc and "`[email]`" in doc and "`[brand]`" in doc
     out = capsys.readouterr().out
-    # SDK-only: the graph is recorded in-process and no dashboard link is printed.
     assert "nodes recorded in-process" in out
     assert "/ui/#task=" not in out
 
 
 async def test_with_a_key_the_run_also_prints_its_dashboard_link(brain, capsys):
-    """The one line a FluxCompute key adds. verify() is patched: the guard in conftest blackholes
-    the endpoint, and the emitter's POSTs go there and are swallowed, which is the guard's job."""
     brain.monkeypatch.setenv("FLUXCOMPUTE_KEY", "flx_test")
     with patch("fluxcompute.client.FluxClient.verify", new=lambda self: _noop()):
         assert await _run(brain, "--version", "1") == 0
@@ -233,13 +193,11 @@ async def test_with_a_key_the_run_also_prints_its_dashboard_link(brain, capsys):
 
 
 async def test_fabricated_quote_never_reaches_the_document(brain):
-    """The model asserts an unquotable claim on every call. None of them survive."""
     await _run(brain, "--version", "1")
     assert "most advanced freight platform" not in (brain.out / "brain.md").read_text()
 
 
 async def test_precedence_is_data_not_a_prompt(brain):
-    """The repo says the Starter plan is $49 and an email says $59; the schema picks."""
     await _run(brain, "--version", "1")
     doc = (brain.out / "brain.md").read_text()
     assert "starter_monthly_usd**: 59" in doc
@@ -247,7 +205,6 @@ async def test_precedence_is_data_not_a_prompt(brain):
 
 
 async def test_sender_allowlist_runs_before_the_model(brain):
-    """A prompt injection from an unlisted sender must not reach a model at all."""
     assert await _run(brain, "--version", "1") == 0
     doc = (brain.out / "brain.md").read_text().lower()
     assert "bob vance" not in doc
@@ -255,7 +212,6 @@ async def test_sender_allowlist_runs_before_the_model(brain):
     assert prompts, "the provider was called"
     assert "ignore your previous instructions" not in prompts
     assert "bob vance" not in prompts
-    # And the sender the allowlist admits is read by address, not by the whole header.
     assert "harbour blue" in prompts  # the brand file did reach the model
 
 
@@ -275,14 +231,10 @@ async def test_unchanged_run_makes_no_llm_calls(brain, capsys):
     before = len(brain.fake.messages.models)
     assert await _run(brain, "--version", "1", "--attempt", "2") == 0
     assert len(brain.fake.messages.models) == before
-    # The number the reader wants is how much work was reused, and it is not zero.
     assert "diff: 0 changed, 17 reused" in capsys.readouterr().out
 
 
 async def test_back_to_back_runs_get_their_own_task_ids(brain):
-    """The README's sequence passes no --attempt. Each run must still be its own task: the
-    second run's row must not replace the first's, and its changelog must not inherit the
-    first run's conflicts through a shared id."""
     assert await _run(brain, "--version", "1") == 0
     assert "over `repo` (49)" in (brain.out / "brain.changelog.md").read_text()
     assert await _run(brain, "--version", "2") == 0
@@ -294,21 +246,18 @@ async def test_back_to_back_runs_get_their_own_task_ids(brain):
 
 
 async def test_a_rename_is_not_a_deletion(brain):
-    """Identical bytes under a new path must carry their facts, not tombstone them."""
     await _run(brain, "--version", "1")
     await _run(brain, "--version", "2", "--attempt", "2")
     assert "Multi-leg planning" in (brain.out / "brain.md").read_text()
 
 
 async def test_a_source_that_stops_asserting_removes_the_fact_that_run(brain):
-    """integrations.md still exists and dropped Kestrel: no grace period applies."""
     await _run(brain, "--version", "1")
     await _run(brain, "--version", "2", "--attempt", "2")
     assert "Kestrel" not in (brain.out / "brain.md").read_text()
 
 
 async def test_a_vanished_source_waits_out_the_grace_period(brain):
-    """docs/security.md is deleted. An outage looks the same for one run, so it waits."""
     await _run(brain, "--version", "1")
     await _run(brain, "--version", "2", "--attempt", "2")
     assert "SOC 2" in (brain.out / "brain.md").read_text()
@@ -317,8 +266,6 @@ async def test_a_vanished_source_waits_out_the_grace_period(brain):
 
 
 async def test_graph_carries_no_content_only_identifiers(brain):
-    """Names and attributes are part of the graph whatever content_capture says, so they hold
-    hashes and counts, never text from a source."""
     await _run(brain, "--version", "1")
     graph = brain.module.LAST_GRAPH
     leaks = ["@", "Priya", "Northwind", "sk-ant", "Starter"]
@@ -328,13 +275,6 @@ async def test_graph_carries_no_content_only_identifiers(brain):
 
 
 async def test_injected_failure_is_retried_by_resume_in_the_same_graph(brain):
-    """The walkthrough's recovery step depends on this shape, so pin it.
-
-    A provider failure stops the run with the task root marked failed and one failed llm_call
-    node. The handler then retries exactly that step with client.resume(): the retry is a
-    second llm_call in the same graph, linked to the node it replaces, and the run reports the
-    extractions it never reached rather than pretending to have finished.
-    """
     from fluxcompute.graph.resume import build_resume_plan
 
     assert await _run(brain, "--version", "1", "--fail-at", "2") == 1
@@ -344,8 +284,7 @@ async def test_injected_failure_is_retried_by_resume_in_the_same_graph(brain):
     retries = [n for n in graph.in_order() if failed[0].node_id in n.depends_on]
     assert len(retries) == 1 and retries[0].status == "succeeded"
     assert "claude-3-5-haiku-20241022" in brain.fake.messages.models
-    # The retry resolved the LLM failure. What the planner still sees is the step that wrapped
-    # it, which stays failed so a reader can find where the run broke.
+    # the retry resolved the llm_call; the wrapping step stays failed
     assert build_resume_plan(graph).failed_node.node_type == "tool_call"
     db = sqlite3.connect(brain.out / "brain.db")
     assert db.execute("SELECT status FROM run").fetchone()[0] == "failed"
@@ -354,9 +293,6 @@ async def test_injected_failure_is_retried_by_resume_in_the_same_graph(brain):
 
 
 async def test_resume_from_a_fresh_process_finishes_the_run(brain):
-    """The cursor must not be the marker of done work, or a failed run reports zero changes
-    forever afterwards. The marker is the extraction row, so a second process picks up every
-    item the first one never reached and nothing that it did."""
     assert await _run(brain, "--version", "1", "--fail-at", "2") == 1
     task_id = brain.module.LAST_GRAPH.task_id
     calls_before = len(brain.fake.messages.models)
@@ -368,14 +304,11 @@ async def test_resume_from_a_fresh_process_finishes_the_run(brain):
         "failed"
     )
     db.close()
-    # Fifteen items were never reached; the two already extracted are not paid for again.
-    # QA is answered from the fact store, so it costs no model calls.
+    # 15 never reached; the two already extracted are not paid for again
     assert len(brain.fake.messages.models) - calls_before == 15
 
 
 async def test_resume_syncs_the_version_the_failed_run_was_syncing(brain):
-    """The printed hint is `--resume <task>` with no --version. Resuming has to read the
-    version back from the run table, or a failed v2 sync silently becomes a v1 sync."""
     assert await _run(brain, "--version", "1") == 0
     assert await _run(brain, "--version", "2", "--fail-at", "2") == 1
     task_id = brain.module.LAST_GRAPH.task_id
@@ -390,8 +323,6 @@ async def test_resume_syncs_the_version_the_failed_run_was_syncing(brain):
 
 
 async def test_a_reply_that_is_never_json_stops_cleanly(brain, capsys):
-    """Both provider calls succeed and neither is JSON. That leaves no failed llm_call node,
-    so there is nothing for resume() to retry; the run must say so and exit 1, not crash."""
     brain.fake.messages.prose_for = "Harbour Blue"
     assert await _run(brain, "--version", "1") == 1
     out = capsys.readouterr().out
@@ -404,8 +335,6 @@ async def test_a_reply_that_is_never_json_stops_cleanly(brain, capsys):
 
 
 async def test_a_held_run_publishes_nothing(brain, tmp_path, capsys):
-    """Emptying most of the repository would remove most facts. Held has to mean held: no
-    removal is applied, brain.md is not rewritten, and the gate says why."""
     fixtures = tmp_path / "fixtures"
     shutil.copytree(AGENTS / "fixtures", fixtures)
     brain.monkeypatch.setattr(brain.module, "COMPANY", fixtures)
@@ -430,11 +359,6 @@ async def test_a_held_run_publishes_nothing(brain, tmp_path, capsys):
     db.close()
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# The shared scrubber and error vocabulary, which every agent depends on
-# ─────────────────────────────────────────────────────────────────────────────
-
-
 @pytest.fixture
 def common(monkeypatch):
     monkeypatch.syspath_prepend(str(AGENTS))
@@ -442,12 +366,6 @@ def common(monkeypatch):
 
 
 def test_scrubber_labels_each_category_correctly(common):
-    """Order in _SECRETS is load-bearing, not cosmetic.
-
-    The phone pattern matches any long run of digits, so it is a superset of a card number.
-    With PHONE first, cards were still redacted but were reported as phone numbers, and the
-    counts are what a reviewer reads when asking what left the machine.
-    """
     text, counts = common.scrub(
         "card 4111 1111 1111 1111, mobile +44 7700 900412, mail a@b.com, key sk-ant-abcdefgh12345"
     )
@@ -458,8 +376,6 @@ def test_scrubber_labels_each_category_correctly(common):
 
 
 def test_dates_and_version_numbers_are_not_phone_numbers(common):
-    """A date redacted as a phone number protects nobody, and a quote through it can no
-    longer be checked against its source, so the fact is silently dropped."""
     text, counts = common.scrub(
         "Released 2026-09-10 at 12:30, pinned to 0.3.0 (2024); support ends 2026-12-31T23:59:00Z."
         " Call +44 7700 900412 with questions about ticket 123456789012."
@@ -471,8 +387,6 @@ def test_dates_and_version_numbers_are_not_phone_numbers(common):
 
 
 def test_a_quote_is_verbatim_whatever_its_case(common):
-    """Haiku quotes 'from 1 November our European office...' for a body that reads 'From 1
-    November...'. The sentence is there; a case-sensitive check called it fabricated."""
     source = "Subject: New office\n\nFrom 1 November our European office is in Rotterdam."
     assert common.quote_is_verbatim("from 1 November our European office is in Rotterdam", source)
     assert common.quote_is_verbatim("FROM 1 NOVEMBER OUR EUROPEAN OFFICE", source)
@@ -492,18 +406,12 @@ def test_mailbox_dates_are_read_in_every_form_a_client_writes(common):
 
 
 def test_error_codes_avoid_the_spend_vocabulary(common):
-    """The SDK classifies a failed node as a budget failure by matching the error text.
-
-    An agent that raised "quota exceeded" for its own reasons would be classified as a spend
-    problem and, three in a row, as a stall.
-    """
     banned = ("rate limit", "quota", "billing", "credit")
     for code in common.ERROR_CODES:
         assert not any(word in code.lower() for word in banned), code
 
 
 def test_runs_without_a_fluxcompute_key(common, monkeypatch):
-    """The SDK-only contract: no key means telemetry off and no verify() handshake."""
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     monkeypatch.delenv("FLUXCOMPUTE_KEY", raising=False)
     import asyncio
@@ -515,17 +423,8 @@ def test_runs_without_a_fluxcompute_key(common, monkeypatch):
     assert clients.anthropic._graph_emitter._enabled is False
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# The CRM inbox
-#
-# What these tests can and cannot prove. The scripted classifier maps a subject to a class,
-# so it agrees with crm_labels.json by construction. That makes the precision figure a test
-# of the pipeline -- that a decision reaches the CRM intact -- and NOT evidence that the
-# model classifies well. Only a real run measures that. This suite asserts the properties
-# that hold whatever the model says: what never reaches a model at all, what is idempotent,
-# and what is decided in code.
-# ─────────────────────────────────────────────────────────────────────────────
-
+# the scripted classifier agrees with crm_labels.json by construction: precision here tests the
+# pipeline, not the model
 CRM_RULES = [
     (r"Carrier ranking API", "sales_inquiry", 0.93, False),
     (r"quick chat", "other", 0.41, False),
@@ -617,11 +516,7 @@ async def _run_inbox(inbox, *argv: str) -> int:
 
 
 def _own_inbox(inbox, messages: list[dict], labels: list[dict] | None = None) -> None:
-    """Point the agent at a copy of the fixtures whose run-1 mailbox is `messages`.
-
-    The shipped inboxes have no thread with two different people in it and no message without
-    a Message-ID, so the cases that need those are written here, in the same JSON shape.
-    """
+    """Fixtures copy whose run-1 mailbox is `messages`; the shipped inboxes lack these cases."""
     fixtures = inbox.out / "fixtures"
     shutil.copytree(AGENTS / "fixtures", fixtures)
     (fixtures / "inbox_crm" / "run1.json").write_text(json.dumps(messages))
@@ -651,7 +546,6 @@ def _crm_rows(inbox) -> list[dict]:
 
 
 async def test_machine_mail_never_reaches_a_model(inbox, capsys):
-    """An out-of-office and a newsletter are decided by their headers, before any spend."""
     assert await _run_inbox(inbox, "--run", "1") == 0
     db = sqlite3.connect(inbox.out / "crm.db")
     ignored = db.execute("SELECT COUNT(*) FROM message WHERE gate='ignored'").fetchone()[0]
@@ -661,8 +555,7 @@ async def test_machine_mail_never_reaches_a_model(inbox, capsys):
     ).fetchone()[0]
     db.close()
     assert ignored == 2 and classified_anyway == 0
-    # 18 messages, one dropped as a forward of another: 17 kept. Minus the two machine mails
-    # and the one quarantined phishing message, 14 reach a model.
+    # 18 messages, 1 dropped as a forward: 17 kept, minus 2 machine mails and 1 quarantined
     assert len(inbox.fake.messages.models) == 14
     out = capsys.readouterr().out
     assert "nodes recorded in-process" in out and "/ui/#task=" not in out
@@ -676,7 +569,6 @@ async def test_with_a_key_the_inbox_run_prints_its_dashboard_link(inbox, capsys)
 
 
 async def test_phishing_is_quarantined_without_a_model_call(inbox):
-    """The rules that catch a look-alike domain are code. A model is never asked."""
     await _run_inbox(inbox, "--run", "1")
     db = sqlite3.connect(inbox.out / "crm.db")
     quarantined = db.execute("SELECT COUNT(*) FROM message WHERE gate = 'quarantined'").fetchone()[
@@ -692,11 +584,6 @@ async def test_phishing_is_quarantined_without_a_model_call(inbox):
 
 
 async def test_priority_is_computed_in_code(inbox):
-    """The model returns a class; the number a human sorts by is a pure function.
-
-    A model that could set priority could be talked into setting it, which is exactly what
-    the injection-shaped mail in the fixture tries.
-    """
     priority_of = inbox.module.priority_of
     base = priority_of("sales_inquiry", "prospect", "Pricing", 1)
     assert priority_of("sales_inquiry", "customer", "Pricing", 1) == base + 1
@@ -709,7 +596,7 @@ async def test_a_reply_updates_its_thread_instead_of_inserting(inbox):
     first = len((inbox.out / "crm.csv").read_text().strip().splitlines())
     assert await _run_inbox(inbox, "--run", "2", "--attempt", "2") == 0
     rows = (inbox.out / "crm.csv").read_text().strip().splitlines()
-    # Run 2 brings three messages, one of which continues an existing thread.
+    # run 2 brings three messages, one of which continues an existing thread
     assert len(rows) == first + 2
 
 
@@ -723,7 +610,6 @@ async def test_rerunning_the_same_inbox_changes_nothing(inbox):
 
 
 async def test_resume_reads_the_inbox_the_failed_run_was_reading(inbox):
-    """`--resume <task>` carries no --run. The task's own row says which mailbox it was on."""
     assert await _run_inbox(inbox, "--run", "1") == 0
     assert await _run_inbox(inbox, "--run", "2") == 0
     second = inbox.common.run_id("crm", 2)  # no --attempt passed: the second run today is 02
@@ -735,8 +621,6 @@ async def test_resume_reads_the_inbox_the_failed_run_was_reading(inbox):
 
 
 async def test_a_machine_reply_on_an_open_thread_does_not_erase_it(inbox):
-    """The thread's record is led by its newest message that passed the gate, so an
-    out-of-office replying to a support request cannot turn the request into 'ignored'."""
     _own_inbox(
         inbox,
         [
@@ -790,8 +674,6 @@ async def test_messages_without_a_message_id_each_get_a_row(inbox):
 
 
 async def test_forget_rebuilds_a_thread_that_keeps_other_people(inbox):
-    """The row for a thread the erased person was newest in was built from their message.
-    It has to be rebuilt from what remains, now, not on a next run that may never touch it."""
     _own_inbox(
         inbox,
         [
@@ -824,8 +706,6 @@ async def test_forget_rebuilds_a_thread_that_keeps_other_people(inbox):
 
 
 async def test_a_reply_that_is_all_quoted_history_is_not_a_duplicate(inbox):
-    """Two unrelated messages whose bodies are empty after quote stripping must both be kept;
-    an empty body is not evidence that one message is a copy of the other."""
     quoted = "> thanks, will do\n> -- sent from my phone"
     _own_inbox(
         inbox,
@@ -851,7 +731,6 @@ async def test_a_reply_that_is_all_quoted_history_is_not_a_duplicate(inbox):
 
 
 async def test_forget_erases_a_sender_without_needing_a_provider(inbox):
-    """An erasure request must not fail because a key is bad. It touches no model."""
     await _run_inbox(inbox, "--run", "1")
     inbox.monkeypatch.setenv("ANTHROPIC_API_KEY", "")
     calls = len(inbox.fake.messages.models)

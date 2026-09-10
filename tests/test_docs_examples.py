@@ -15,9 +15,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 
 def _under_examples(pattern: str) -> list[pathlib.Path]:
-    """rglob, not glob: a notebook or script one directory down must not silently escape the
-    checks. Dot-directories are skipped: Jupyter's .ipynb_checkpoints/ copies keep their
-    outputs, and a .venv under examples/ is not an example."""
+    """Skips dot-directories: .ipynb_checkpoints copies keep their outputs."""
     return sorted(
         p
         for p in (ROOT / "examples").rglob(pattern)

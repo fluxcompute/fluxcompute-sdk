@@ -55,7 +55,6 @@ dev = [
     # examples/agents/company_brain reads YAML; listed here too so tests/ can import the agents.
     "pyyaml>=6.0",
 ]
-# What the worked agents under examples/agents/ need beyond the SDK itself.
 examples = ["pyyaml>=6.0"]
 
 [project.urls]
