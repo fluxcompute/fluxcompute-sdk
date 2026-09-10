@@ -1,0 +1,378 @@
+{
+  "description": "The brain's regression test. Answers are checked against the rendered brain.md by substring, never by a model: a model asked whether its own document is right will say yes. The questions that must NOT be answerable are the useful half. They catch a brain that invents, and a brain that keeps a fact after its source dropped it. Expectations are keyed by document version, because a deleted source is only believed after the grace period: facts from docs/security.md and brand.md's colour line are still present in v2 and gone in v3.",
+  "questions": [
+    {
+      "id": "q01",
+      "question": "What is the company's name?",
+      "expect": {
+        "v1": [
+          "Northwind"
+        ],
+        "v2": [
+          "Northwind"
+        ],
+        "v3": [
+          "Northwind"
+        ]
+      }
+    },
+    {
+      "id": "q02",
+      "question": "What is the tagline?",
+      "expect": {
+        "v1": [
+          "without the dispatcher"
+        ],
+        "v2": [
+          "shows its work"
+        ],
+        "v3": [
+          "shows its work"
+        ]
+      }
+    },
+    {
+      "id": "q03",
+      "question": "How much is the Starter plan per month?",
+      "expect": {
+        "v1": [
+          "59"
+        ],
+        "v2": [
+          "59"
+        ],
+        "v3": [
+          "59"
+        ]
+      },
+      "note": "The email announced $59 before the repo said so. In v1 this is the precedence rule working; in v2 both sources agree."
+    },
+    {
+      "id": "q04",
+      "question": "How much is the Growth plan per month?",
+      "expect": {
+        "v1": [
+          "499"
+        ],
+        "v2": [
+          "499"
+        ],
+        "v3": [
+          "499"
+        ]
+      }
+    },
+    {
+      "id": "q05",
+      "question": "Which licence does the product ship under?",
+      "expect": {
+        "v1": [
+          "Apache-2.0"
+        ],
+        "v2": [
+          "Apache-2.0"
+        ],
+        "v3": [
+          "Apache-2.0"
+        ]
+      }
+    },
+    {
+      "id": "q06",
+      "question": "Which version of the Waypoint SDK does the ranking service pin?",
+      "expect": {
+        "v1": [
+          "0.3.0"
+        ],
+        "v2": [
+          "0.3.1"
+        ],
+        "v3": [
+          "0.3.1"
+        ]
+      }
+    },
+    {
+      "id": "q07",
+      "question": "Who is the Chief Executive Officer?",
+      "expect": {
+        "v1": [
+          "Priya Raman"
+        ],
+        "v2": [
+          "Priya Raman"
+        ],
+        "v3": [
+          "Priya Raman"
+        ]
+      }
+    },
+    {
+      "id": "q08",
+      "question": "Who is the Head of Customer Success?",
+      "expect": {
+        "v1": [
+          "Jordan Bell"
+        ],
+        "v2": {
+          "absent": [
+            "jordan bell"
+          ]
+        },
+        "v3": {
+          "absent": [
+            "jordan bell"
+          ]
+        }
+      },
+      "note": "Removed from docs/team.md in v2 and confirmed by email. The brain must stop asserting it."
+    },
+    {
+      "id": "q09",
+      "question": "Which third-party TMS does the product integrate with?",
+      "expect": {
+        "v1": [
+          "Kestrel"
+        ],
+        "v2": {
+          "absent": [
+            "kestrel"
+          ]
+        },
+        "v3": {
+          "absent": [
+            "kestrel"
+          ]
+        }
+      },
+      "note": "Kestrel drops out of docs/integrations.md in v2. The file still exists, so the fact is removed in the same run: a source that still speaks and stops saying something has decided, and there is no ambiguity to wait out."
+    },
+    {
+      "id": "q21",
+      "question": "How often is carrier capacity refreshed?",
+      "expect": {
+        "v1": [
+          "fifteen minutes"
+        ],
+        "v2": [
+          "five minutes"
+        ],
+        "v3": [
+          "five minutes"
+        ]
+      },
+      "note": "One section of a six-section FAQ changes. Only that section is re-extracted; the other five cost nothing."
+    },
+    {
+      "id": "q10",
+      "question": "How many days is customer shipment data retained?",
+      "expect": {
+        "v1": [
+          "30"
+        ],
+        "v2": {
+          "absent": [
+            "30 day",
+            "retained for 30"
+          ]
+        },
+        "v3": {
+          "absent": [
+            "30 day",
+            "retained for 30"
+          ]
+        }
+      },
+      "note": "docs/security.md is deleted in v2, so every fact sourced only from it is tombstoned."
+    },
+    {
+      "id": "q11",
+      "question": "Which compliance certification does the company hold?",
+      "expect": {
+        "v1": [
+          "SOC 2"
+        ],
+        "v2": [
+          "SOC 2"
+        ],
+        "v3": {
+          "absent": [
+            "soc 2",
+            "soc2"
+          ]
+        }
+      },
+      "note": "Its source file is gone, so it survives one more sync before removal: an outage and a deletion look identical for one run."
+    },
+    {
+      "id": "q12",
+      "question": "What is the brand colour?",
+      "expect": {
+        "v1": [
+          "12405F"
+        ],
+        "v2": [
+          "12405F"
+        ],
+        "v3": {
+          "absent": [
+            "12405f",
+            "harbour blue"
+          ]
+        }
+      },
+      "note": "The line is deleted from brand.md in v2. Its source file is gone, so it survives one more sync before removal: an outage and a deletion look identical for one run."
+    },
+    {
+      "id": "q13",
+      "question": "Where is the European office?",
+      "expect": {
+        "v1": {
+          "absent": [
+            "rotterdam"
+          ]
+        },
+        "v2": [
+          "Rotterdam"
+        ],
+        "v3": [
+          "Rotterdam"
+        ]
+      },
+      "note": "Announced by email between the two runs."
+    },
+    {
+      "id": "q14",
+      "question": "Who is the site reliability engineer?",
+      "expect": {
+        "v1": [
+          "Sofia Marchetti"
+        ],
+        "v2": [
+          "Sofia Marchetti"
+        ],
+        "v3": [
+          "Sofia Marchetti"
+        ]
+      }
+    },
+    {
+      "id": "q15",
+      "question": "What is Sofia Marchetti's mobile number?",
+      "expect": {
+        "v1": {
+          "absent": [
+            "7700",
+            "900412"
+          ]
+        },
+        "v2": {
+          "absent": [
+            "7700",
+            "900412"
+          ]
+        },
+        "v3": {
+          "absent": [
+            "7700",
+            "900412"
+          ]
+        }
+      },
+      "note": "Scrubbed before the text ever reached a model. If this question can be answered, the scrubber failed."
+    },
+    {
+      "id": "q16",
+      "question": "Is the Starter plan free?",
+      "expect": {
+        "v1": {
+          "absent": [
+            "free"
+          ]
+        },
+        "v2": {
+          "absent": [
+            "free"
+          ]
+        },
+        "v3": {
+          "absent": [
+            "free"
+          ]
+        }
+      },
+      "note": "Asserted only by a prompt-injection email from a sender who is not on the allowlist."
+    },
+    {
+      "id": "q17",
+      "question": "Is Bob Vance the Chief Executive Officer?",
+      "expect": {
+        "v1": {
+          "absent": [
+            "bob vance"
+          ]
+        },
+        "v2": {
+          "absent": [
+            "bob vance"
+          ]
+        },
+        "v3": {
+          "absent": [
+            "bob vance"
+          ]
+        }
+      },
+      "note": "The same injection attempt. The allowlist is checked in code, before any model call."
+    },
+    {
+      "id": "q18",
+      "question": "What is the stated p95 planning latency?",
+      "expect": {
+        "v1": [
+          "380"
+        ],
+        "v2": [
+          "380"
+        ],
+        "v3": [
+          "380"
+        ]
+      }
+    },
+    {
+      "id": "q19",
+      "question": "What is on the roadmap for intermodal shipments?",
+      "expect": {
+        "v1": [
+          "Multi-leg"
+        ],
+        "v2": [
+          "Multi-leg"
+        ],
+        "v3": [
+          "Multi-leg"
+        ]
+      },
+      "note": "roadmap.md is renamed in v2 with identical bytes. A rename must not read as a deletion."
+    },
+    {
+      "id": "q20",
+      "question": "How is data at rest encrypted?",
+      "expect": {
+        "v1": [
+          "AES-256"
+        ],
+        "v2": [
+          "AES-256"
+        ],
+        "v3": {
+          "absent": [
+            "aes-256"
+          ]
+        }
+      },
+      "note": "Its source file is gone, so it survives one more sync before removal: an outage and a deletion look identical for one run."
+    }
+  ]
+}

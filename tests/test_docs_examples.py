@@ -12,7 +12,19 @@ import re
 import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-NOTEBOOKS = sorted((ROOT / "examples").glob("*.ipynb"))
+
+
+def _under_examples(pattern: str) -> list[pathlib.Path]:
+    """Skips dot-directories: .ipynb_checkpoints copies keep their outputs."""
+    return sorted(
+        p
+        for p in (ROOT / "examples").rglob(pattern)
+        if not any(part.startswith(".") for part in p.relative_to(ROOT).parts)
+    )
+
+
+NOTEBOOKS = _under_examples("*.ipynb")
+EXAMPLE_SCRIPTS = _under_examples("*.py")
 
 # Names removed in 0.3.0; docs must not reference them.
 REMOVED_SYMBOLS = (
@@ -82,6 +94,19 @@ def test_readme_does_not_reference_removed_symbols():
     text = (ROOT / "README.md").read_text(encoding="utf-8")
     for symbol in REMOVED_SYMBOLS:
         assert symbol not in text, f"README references removed {symbol!r}"
+
+
+@pytest.mark.parametrize("path", EXAMPLE_SCRIPTS, ids=lambda p: str(p.relative_to(ROOT)))
+def test_example_scripts_compile(path):
+    """Scripts are plain modules, so plain-script semantics apply: no top-level await."""
+    compile(path.read_text(encoding="utf-8"), str(path.relative_to(ROOT)), "exec")
+
+
+@pytest.mark.parametrize("path", EXAMPLE_SCRIPTS, ids=lambda p: str(p.relative_to(ROOT)))
+def test_example_scripts_do_not_reference_removed_symbols(path):
+    text = path.read_text(encoding="utf-8")
+    for symbol in REMOVED_SYMBOLS:
+        assert symbol not in text, f"{path.name} references removed {symbol!r}"
 
 
 def _literal_list_from_notebook(path: pathlib.Path, name: str) -> list[str]:

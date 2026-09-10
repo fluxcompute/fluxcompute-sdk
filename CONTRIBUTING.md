@@ -59,7 +59,7 @@ process that ran it is gone. The same seam is available to you; see
 
 ```bash
 pip install -e ".[dev]"
-ruff check fluxcompute/
+ruff check fluxcompute/ examples/
 pytest tests/ -v
 ```
 

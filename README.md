@@ -163,12 +163,15 @@ The wire format the SDK sends is documented and versioned in
   call and measured savings, ~5 minutes
 - [`examples/full_walkthrough.ipynb`](examples/full_walkthrough.ipynb):
   routing tiers, sessions, streaming, migrating from the Anthropic SDK
+- [`examples/agents/`](examples/agents/): two complete agents, a company
+  brain and a CRM inbox, with fixtures and a $0 test suite. Provider key
+  only; a `FLUXCOMPUTE_KEY` adds the dashboard link. `pip install -e ".[examples]"`
 
 ## Development
 
 ```bash
 pip install -e ".[dev]"
-ruff check fluxcompute/
+ruff check fluxcompute/ examples/
 pytest tests/ -v
 ```
 

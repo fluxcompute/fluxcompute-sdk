@@ -52,7 +52,10 @@ dev = [
     # commits. Adopting that style is a deliberate, separate migration.
     "ruff>=0.4.0,<0.15",
     "langgraph>=0.2.0",
+    # examples/agents/company_brain reads YAML; listed here too so tests/ can import the agents.
+    "pyyaml>=6.0",
 ]
+examples = ["pyyaml>=6.0"]
 
 [project.urls]
 Homepage = "https://fluxcompute.dev"
@@ -70,3 +73,7 @@ pythonpath = ["."]
 [tool.ruff]
 target-version = "py310"
 line-length = 100
+
+[tool.ruff.lint.per-file-ignores]
+# The notebooks' first cell does `import os, getpass` on one line, as a notebook would.
+"*.ipynb" = ["E401"]

@@ -1,0 +1,79 @@
+# Fact vocabulary, source precedence and removal rules for company_brain.
+
+version: "2026-09-07.1"
+
+# collected but never extracted: a changelog states what used to be true
+exclude:
+  - "CHANGELOG.md"
+  - ".env.example"
+  - "*.png"
+  - "*.jpg"
+  - "*.pem"
+
+sources:
+  repo: "The company's own repository. Authoritative for how the product works."
+  brand: "brand.md. Authoritative for voice, naming and positioning."
+  email: "Announcements from allowlisted senders. Fastest, least reviewed."
+
+# only these senders produce facts
+email_allowlist:
+  - priya@northwind.example.com
+  - hr@northwind.example.com
+  - ops@northwind.example.com
+
+# first matching pattern wins; later sources in a list beat earlier ones
+precedence:
+  "pricing.*": [repo, brand, email]
+  "company.tagline": [repo, email, brand]
+  "company.brand_colour": [repo, email, brand]
+  "brand.*": [repo, email, brand]
+  "*": [email, brand, repo]
+
+entities:
+  company:
+    attributes:
+      name: "Registered or trading name."
+      tagline: "The one-line description used in marketing."
+      description: "What the product does, in one or two sentences."
+      licence: "The licence the product ships under."
+      install_command: "How a developer installs it."
+      brand_colour: "The primary brand colour, with a hex value."
+      office: {desc: "A physical office location, with the city.", multi: true}
+  pricing:
+    attributes:
+      starter_monthly_usd: "Starter plan price per month, in US dollars."
+      growth_monthly_usd: "Growth plan price per month, in US dollars."
+      enterprise_terms: "How the Enterprise plan is priced."
+      overage_per_load_usd: "Overage price per planned load."
+  product:
+    attributes:
+      integration: {desc: "A named third-party system the product integrates with.", multi: true}
+      capability: {desc: "Something the product can do.", multi: true}
+      sdk_version: "The version of a dependency the product pins."
+      runtime: "Language or platform the service runs on."
+      latency_p95_ms: "Stated p95 latency for the planning path."
+      capacity_refresh: "How often carrier capacity is refreshed."
+  security:
+    attributes:
+      certification: {desc: "A named compliance certification.", multi: true}
+      data_retention_days: "How long customer data is kept, in days."
+      encryption: "How data at rest is encrypted."
+  team:
+    attributes:
+      ceo: "Name of the Chief Executive Officer."
+      cto: "Name of the Chief Technology Officer."
+      head_of_customer_success: "Name of the Head of Customer Success."
+      staff_engineer: {desc: "Name of a staff engineer and their area.", multi: true}
+      sre: "Name of a site reliability engineer."
+  roadmap:
+    attributes:
+      planned: {desc: "Something the company has said it plans to build.", multi: true}
+
+# a present source that stops asserting a fact removes it that run; a vanished source waits
+# grace_runs
+removal:
+  grace_runs: 2
+  # above this share of removals in one run, nothing is published
+  anomaly_threshold: 0.25
+  # an email outside the window has not been retracted
+  never_absence_remove: [email]

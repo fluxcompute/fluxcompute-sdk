@@ -1,0 +1,32 @@
+[
+  {
+    "message_id": "<ng-8000-0012@northgate-logistics.example>",
+    "from": "Yusuf Karim <yusuf@northgate-logistics.example>",
+    "to": "hello@northwind.example.com",
+    "subject": "Pricing for 8,000 loads a month",
+    "date": "2026-09-08T09:12:00+00:00",
+    "body": "Hello,\n\nNorthgate plans about 8,000 loads a month across the Southeast and we are outgrowing our current tool. We need ranked carriers with an explanation, an API our dispatch tooling can call, and something better than a nightly capacity file.\n\nWhat does Growth cost at that volume, and is there a contract minimum?\n\nYusuf Karim\nNorthgate Logistics"
+  },
+  {
+    "message_id": "<inv-9921@initech-secure.example>",
+    "from": "Initech Accounts Payable <ap@initech-secure.example>",
+    "to": "ap@northwind.example.com",
+    "reply_to": "finance@billing-updates.example",
+    "subject": "Action needed: supplier banking details",
+    "date": "2026-09-08T11:05:00+00:00",
+    "body": "Dear accounts payable,\n\nOur banking details have changed. Please confirm your account details on the supplier portal so the September invoices are not delayed.\n\nhttps://invoice-portal-secure.example/initech/confirm\n\nInitech Accounts Payable"
+  },
+  {
+    "message_id": "<CAF9x71-um-0003@umbrella-logistics.example>",
+    "from": "Dana Okafor <dana.okafor@umbrella-logistics.example>",
+    "to": "hello@northwind.example.com",
+    "subject": "Re: Carrier ranking API for a 40-truck brokerage",
+    "date": "2026-09-08T10:40:00-05:00",
+    "in_reply_to": "<CAF9x71-um-0002@umbrella-logistics.example>",
+    "references": [
+      "<CAF9x71-um-0001@umbrella-logistics.example>",
+      "<CAF9x71-um-0002@umbrella-logistics.example>"
+    ],
+    "body": "We talked it through internally and we want to run a pilot on the Midwest lanes in October.\n\nWho do we sign with, and how long does onboarding usually take?\n\nDana\n\nOn Wed, 2 Sep 2026, Dana Okafor wrote:\n> Two more things. Most of our volume is Midwest to Southeast dry van and we\n> run Kestrel TMS for dispatch."
+  }
+]
