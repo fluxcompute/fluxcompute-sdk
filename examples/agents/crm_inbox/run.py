@@ -29,7 +29,6 @@ import re
 import sqlite3
 import sys
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -42,15 +41,22 @@ from _common import (  # noqa: E402
     call,
     connect,
     content_hash,
+    decode_header,
+    decode_qp,
     display,
     graph_line,
     make_clients,
+    next_attempt,
+    parse_date,
     quote_is_verbatim,
     read_json,
     run_id,
     scrub,
     short_hash,
+    split_address,
+    strip_quoted,
     utc_iso,
+    utc_now,
 )
 
 HERE = Path(__file__).resolve().parent
@@ -122,10 +128,11 @@ RECORD_COLUMNS = (
     "last_msg_at",
 )
 
-# last_msg_at is an ISO UTC string of fixed width, so the string comparison in the WHERE clause
-# is a real time comparison. `>=` rather than `>`: a message arriving out of order must never
-# overwrite a newer thread state, but re-processing the message we already have must still be
-# able to correct the row after a taxonomy change.
+# No guard on the update. build_row reads every message the thread has ever had from the
+# database, not from this run's inbox, so the row it builds is always the thread's current
+# state and no replay, in any order, can move it backwards. A guard on last_msg_at would only
+# ever refuse the one write that needs to happen: the rebuild after --forget removed the
+# thread's newest message.
 UPSERT_SQL = (
     "INSERT INTO crm(thread_key, "
     + ", ".join(RECORD_COLUMNS)
@@ -134,7 +141,6 @@ UPSERT_SQL = (
     + ") ON CONFLICT(thread_key) DO UPDATE SET "
     + ", ".join(f"{c}=excluded.{c}" for c in RECORD_COLUMNS)
     + ", last_seen_task=excluded.last_seen_task"
-    " WHERE excluded.last_msg_at >= crm.last_msg_at"
 )
 
 # The taxonomy is one table because the two things a request type decides -- how it is described
@@ -193,7 +199,7 @@ REQUEST_TYPES: dict[str, dict[str, Any]] = {
 # it is.
 GATE_LABELS = ("ignored", "quarantined")
 
-BRAIN = HERE.parent / "01_company_brain" / "out" / "brain.md"
+BRAIN = HERE.parent / "company_brain" / "out" / "brain.md"
 # Only the facts that help place an email. A licence and an install command are true and
 # useless here, and every word of a rubric is charged on every call and pushes the router's
 # difficulty score up.
@@ -206,7 +212,7 @@ def company_context() -> list[str]:
 
     Knowing what the company sells is what separates "a pitch aimed at us" from "a question
     about our product", and those two land in different halves of the taxonomy. If
-    01_company_brain/out/brain.md does not exist the rubric simply omits the block: the
+    company_brain/out/brain.md does not exist the rubric simply omits the block: the
     taxonomy alone classifies this inbox correctly, and a tutorial should not require the
     previous tutorial to have been run.
     """
@@ -311,39 +317,8 @@ def account_index(accounts: list[Account]) -> dict[str, Account]:
 # Reading the mailbox
 # ─────────────────────────────────────────────────────────────────────────────
 
-_QUOTED = re.compile(r"^\s*>.*$", re.MULTILINE)
-_REPLY_MARKER = re.compile(r"^\s*On .{0,200}wrote:\s*$", re.MULTILINE)
 _FWD_MARKER = re.compile(r"^-{2,}\s*Forwarded message\s*-{2,}\s*$", re.MULTILINE | re.IGNORECASE)
 _SUBJECT_PREFIX = re.compile(r"^\s*(?:(?:re|fw|fwd|aw|sv)\s*(?:\[\d+\])?\s*:\s*)+", re.IGNORECASE)
-
-
-def decode_qp(text: str) -> str:
-    import quopri
-
-    return quopri.decodestring(text.encode()).decode("utf-8", errors="replace")
-
-
-def decode_header(value: str) -> str:
-    from email.header import decode_header as _dh
-
-    out = []
-    for raw, enc in _dh(value or ""):
-        out.append(raw.decode(enc or "utf-8", errors="replace") if isinstance(raw, bytes) else raw)
-    return "".join(out)
-
-
-def split_address(value: str) -> tuple[str, str, str]:
-    """`Display Name <user@host>` -> (display name, address, domain), all lowercased but the name.
-
-    A display name and an address are two different claims about who sent a message. Mail
-    clients show the first and check nothing, which is the entire mechanism behind the
-    look-alike rules further down; keeping them apart here is what makes those rules possible.
-    """
-    from email.utils import parseaddr
-
-    name, addr = parseaddr(value or "")
-    addr = addr.lower()
-    return decode_header(name).strip(), addr, addr.rpartition("@")[2]
 
 
 def unwrap_forward(body: str) -> tuple[str, bool]:
@@ -359,14 +334,6 @@ def unwrap_forward(body: str) -> tuple[str, bool]:
     rest = body[match.end() :]
     head, _, tail = rest.partition("\n\n")  # the quoted From/Date/Subject/To block
     return (tail or head).strip(), True
-
-
-def strip_quoted(body: str) -> str:
-    """Drop quoted history, so a five-message thread is not re-read five times."""
-    cut = _REPLY_MARKER.search(body)
-    if cut:
-        body = body[: cut.start()]
-    return _QUOTED.sub("", body).strip()
 
 
 def norm_id(value: str | None) -> str:
@@ -388,16 +355,6 @@ def thread_key(msg: dict[str, Any], domain: str, sent_at: str) -> str:
             return key
     subject = _SUBJECT_PREFIX.sub("", decode_header(msg.get("subject", ""))).strip().lower()
     return "synth:" + content_hash(f"{domain}|{subject}|{sent_at[:10]}")[:32]
-
-
-def to_utc(value: str) -> str:
-    """Every date in the inbox carries an offset; every date in the database is UTC.
-
-    Sorting or comparing local wall-clock strings puts an 18:20 message from Osaka after a
-    09:14 message from Ohio, which is backwards, and it is the thread's newest message that
-    decides what the CRM row says.
-    """
-    return utc_iso(datetime.fromisoformat(value))
 
 
 @dataclass
@@ -431,10 +388,15 @@ def read_inbox(path: Path) -> list[Message]:
         # something a CRM has any reason to keep.
         body, body_counts = scrub(body)
         subject, subject_counts = scrub(decode_header(raw.get("subject", "")))
-        sent_at = to_utc(raw["date"])
+        sent_at = parse_date(raw["date"])
+        # Gateways and web forms strip Message-ID. Two such messages must not share the empty
+        # string as a primary key, or the second silently replaces the first.
+        message_id = norm_id(raw.get("message_id")) or (
+            "synth:" + content_hash(f"{sender}|{sent_at}|{body}")[:32]
+        )
         out.append(
             Message(
-                message_id=norm_id(raw.get("message_id")),
+                message_id=message_id,
                 thread_key=thread_key(raw, domain, sent_at),
                 sender=sender,
                 sender_domain=domain,
@@ -605,10 +567,15 @@ def next_action(request_type: str, status: str, account: Account | None) -> str:
 
 async def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--run", type=int, default=1, choices=(1, 2))
+    ap.add_argument(
+        "--run",
+        type=int,
+        choices=(1, 2),
+        help="which morning's mail to read (default 1, or the resumed run's)",
+    )
     ap.add_argument("--resume", metavar="TASK_ID")
     ap.add_argument("--forget", metavar="SENDER", help="erase one sender from the database")
-    ap.add_argument("--attempt", type=int, default=1)
+    ap.add_argument("--attempt", type=int, help="default: the next unused number today")
     args = ap.parse_args()
 
     OUT.mkdir(parents=True, exist_ok=True)
@@ -622,25 +589,39 @@ async def main() -> int:
         # one operation a person is entitled to can fail for a reason that is none of their
         # business.
         try:
-            forget(db, args.forget)
+            forget(db, args.forget, by_domain)
             return 0
         finally:
             db.close()
 
+    if args.resume and args.run is None:
+        # A resumed run reads the inbox the failed run was reading, not the default one.
+        row = db.execute("SELECT inbox FROM run WHERE task_id=?", (args.resume,)).fetchone()
+        if row is None:
+            print(f"  no run recorded under {args.resume}")
+            db.close()
+            return 1
+        args.run = row["inbox"]
+    run = args.run or 1
+
     rubric = classify_rubric()
     card = Scorecard("CRM inbox")
-    inbox = COMPANY / "inbox_crm" / f"run{args.run}.json"
+    inbox = COMPANY / "inbox_crm" / f"run{run}.json"
     print(f"  rubric {len(rubric.split())} words")
 
-    clients = await make_clients()
-    task_id = args.resume or run_id("crm", args.attempt)
+    try:
+        clients = await make_clients()
+    except Exception:
+        db.close()
+        raise
+    task_id = args.resume or run_id("crm", args.attempt or next_attempt(db, "crm"))
     print(f"  task {task_id}")
 
     try:
         with clients.anthropic.task("crm-inbox", task_id=task_id):
             db.execute(
                 "INSERT OR REPLACE INTO run(task_id, started_at, status, inbox) VALUES (?,?,?,?)",
-                (task_id, utc_iso(), "running", args.run),
+                (task_id, utc_iso(), "running", run),
             )
 
             # ── fetch ────────────────────────────────────────────────────────
@@ -648,10 +629,15 @@ async def main() -> int:
                 messages = read_inbox(inbox)
                 kept, duplicates, redactions = [], 0, 0
                 for msg in messages:
-                    twin = db.execute(
-                        "SELECT message_id FROM message WHERE body_hash=? AND message_id<>?",
-                        (msg.body_hash, msg.message_id),
-                    ).fetchone()
+                    twin = None
+                    if msg.body:
+                        # An empty body -- a reply that was all quoted history, an attachment
+                        # with no text -- matches every other empty body. That is not a
+                        # duplicate of anything, so the check is skipped for it.
+                        twin = db.execute(
+                            "SELECT message_id FROM message WHERE body_hash=? AND message_id<>?",
+                            (msg.body_hash, msg.message_id),
+                        ).fetchone()
                     if twin is not None:
                         # The same words under a new Message-ID: a forward, or the same
                         # complaint sent to two of our addresses. Threading alone would open a
@@ -863,7 +849,7 @@ async def main() -> int:
                 )
 
             # ── report ───────────────────────────────────────────────────────
-            score = report(db, args.run, touched, clients.anthropic)
+            score = report(db, run, touched, clients.anthropic)
 
             stats = {
                 "messages": len(kept),
@@ -934,7 +920,7 @@ async def main() -> int:
         card.print()
         if score["wrong"]:
             print("  threads whose label did not match: " + ", ".join(score["wrong"]))
-        print(f"\n{graph_line(clients.anthropic, task_id)}\n")
+        print(f"\n{graph_line(clients, task_id)}\n")
         return 0 if all(passed for _, passed, _ in card.gates) else 1
     finally:
         await clients.close()
@@ -985,23 +971,27 @@ def validate(data: Any, body: str) -> dict[str, Any]:
 def build_row(db: sqlite3.Connection, key: str, by_domain: dict[str, Account]) -> tuple:
     """One CRM record from every message in a thread. Code, start to finish.
 
-    The thread's newest message decides what the record says, because a conversation that has
-    moved from a question to a pilot is about the pilot. The account comes from the domain, not
-    from the model: a customer writing from their second domain is still that customer, and no
-    amount of prompt is a substitute for the lookup.
+    The thread's newest message that passed the gate decides what the record says, because a
+    conversation that has moved from a question to a pilot is about the pilot. An out-of-office
+    or a bounce that lands on an open thread still counts in msg_count and still moves
+    last_msg_at, but it does not get to rewrite what the thread is about. The account comes
+    from the domain, not from the model: a customer writing from their second domain is still
+    that customer, and no amount of prompt is a substitute for the lookup.
     """
     msgs = db.execute(
         "SELECT * FROM message WHERE thread_key=? ORDER BY sent_at, message_id", (key,)
     ).fetchall()
     newest = msgs[-1]
-    account = by_domain.get(newest["sender_domain"])
+    passed = [m for m in msgs if m["gate"] == "pass"]
+    lead = passed[-1] if passed else newest
+    account = by_domain.get(lead["sender_domain"])
     verdict = db.execute(
         "SELECT * FROM classification WHERE message_id=? AND prompt_version=?",
-        (newest["message_id"], PROMPT_VERSION),
+        (lead["message_id"], PROMPT_VERSION),
     ).fetchone()
 
-    gate = newest["gate"]
-    flags = newest["gate_flags"]
+    gate = lead["gate"]
+    flags = lead["gate_flags"]
     if gate in ("ignored", "quarantined"):
         status, request_type, confidence, summary, quote, language = gate, None, None, "", "", ""
     elif verdict is None:
@@ -1023,14 +1013,14 @@ def build_row(db: sqlite3.Connection, key: str, by_domain: dict[str, Account]) -
 
     kind = account.kind if account else "unknown"
     priority = (
-        0 if request_type is None else priority_of(request_type, kind, newest["subject"], len(msgs))
+        0 if request_type is None else priority_of(request_type, kind, lead["subject"], len(msgs))
     )
     return (
         key,
         account.account_id if account else "",
         account.name if account else "",
         kind,
-        newest["sender_domain"],
+        lead["sender_domain"],
         request_type,
         status,
         priority,
@@ -1187,15 +1177,15 @@ def report(db: sqlite3.Connection, run: int, touched: list[str], client) -> dict
         return out
 
 
-def forget(db: sqlite3.Connection, sender: str) -> None:
+def forget(db: sqlite3.Connection, sender: str, by_domain: dict[str, Account]) -> None:
     """Erase one person from the store: their messages, what the model said about them, and any
     record left with nothing behind it.
 
     A CRM row that outlives its last message is the failure mode worth naming. It looks like an
     ordinary record, so nobody deletes it, and it is the copy that gets exported to the next
-    system. Threads that still hold other people's messages keep their row and are rebuilt from
-    what remains on the next run, which is why this prints what it kept as well as what it
-    removed.
+    system. Threads that still hold other people's messages keep a row, but the row is rebuilt
+    here and now from what remains: it may have been built from the message just deleted, and
+    "the next run will fix it" is a promise a thread nobody writes to again never collects on.
     """
     sender = sender.strip().lower()
     ids = [
@@ -1217,20 +1207,24 @@ def forget(db: sqlite3.Connection, sender: str) -> None:
     ).rowcount
     db.execute(f"DELETE FROM message WHERE message_id IN ({placeholders})", ids)
 
-    emptied = kept = 0
+    emptied = 0
+    rebuilt: list[tuple] = []
     for key in sorted(threads):
         remaining = db.execute(
             "SELECT COUNT(*) c FROM message WHERE thread_key=?", (key,)
         ).fetchone()["c"]
         if remaining:
-            kept += 1
+            rebuilt.append(build_row(db, key, by_domain))
             continue
         db.execute("DELETE FROM crm WHERE thread_key=?", (key,))
         emptied += 1
+    if rebuilt:
+        apply_rows(db, rebuilt, f"forget-{utc_now():%Y%m%d}")
     export_csv(db, OUT / "crm.csv")
     print(
         f"  forget: messages {len(ids)}, classifications {classifications}, "
-        f"rows deleted {emptied}, rows kept {kept} (threads with other people still in them)"
+        f"rows deleted {emptied}, rows rebuilt {len(rebuilt)}"
+        " (threads with other people still in them)"
     )
 
 

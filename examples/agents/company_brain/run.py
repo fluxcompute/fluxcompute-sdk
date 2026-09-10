@@ -38,15 +38,20 @@ from _common import (  # noqa: E402
     call,
     connect,
     content_hash,
+    decode_header,
+    decode_qp,
     display,
     graph_line,
     make_clients,
+    next_attempt,
     normalize,
     parse_json,
     quote_is_verbatim,
     run_id,
     scrub,
     short_hash,
+    split_address,
+    strip_quoted,
     utc_iso,
 )
 
@@ -186,33 +191,6 @@ def collect_repo(root: Path, exclude: list[str]) -> list[Item]:
     return items
 
 
-_QUOTED = re.compile(r"^\s*>.*$", re.MULTILINE)
-_REPLY_MARKER = re.compile(r"^\s*On .{0,80}wrote:\s*$", re.MULTILINE)
-
-
-def strip_quoted(body: str) -> str:
-    """Drop quoted history so a five-message thread is not re-extracted five times."""
-    cut = _REPLY_MARKER.search(body)
-    if cut:
-        body = body[: cut.start()]
-    return _QUOTED.sub("", body).strip()
-
-
-def decode_qp(text: str) -> str:
-    import quopri
-
-    return quopri.decodestring(text.encode()).decode("utf-8", errors="replace")
-
-
-def decode_header(value: str) -> str:
-    from email.header import decode_header as _dh
-
-    out = []
-    for raw, enc in _dh(value):
-        out.append(raw.decode(enc or "utf-8", errors="replace") if isinstance(raw, bytes) else raw)
-    return "".join(out)
-
-
 def collect_email(path: Path, allowlist: list[str]) -> tuple[list[Item], int]:
     """Read the inbox, keeping only senders a human put on the allowlist.
 
@@ -222,9 +200,11 @@ def collect_email(path: Path, allowlist: list[str]) -> tuple[list[Item], int]:
     """
     items, rejected = [], 0
     seen_bodies: set[str] = set()
+    allowed = {a.lower() for a in allowlist}
     for msg in json.loads(path.read_text()):
-        sender = msg["from"].lower()
-        if sender not in {a.lower() for a in allowlist}:
+        # The address, whatever the display name in front of it says.
+        _, sender, _ = split_address(msg["from"])
+        if sender not in allowed:
             rejected += 1
             continue
         body = msg["body"]
@@ -236,11 +216,14 @@ def collect_email(path: Path, allowlist: list[str]) -> tuple[list[Item], int]:
             continue  # a forward of a message we already have: same words, new id
         seen_bodies.add(body_hash)
         subject = decode_header(msg["subject"])
+        # The sender is provenance, not content. It is on the allowlist by construction, the
+        # scrubber would redact it before the model saw it, and an item that carried it would
+        # count as a redaction that protected nobody.
         items.append(
             Item(
                 "email",
                 msg["message_id"],
-                f"Subject: {subject}\nFrom: {sender}\n\n{body}",
+                f"Subject: {subject}\n\n{body}",
                 url=f"mailto:{msg['message_id']}",
             )
         )
@@ -286,10 +269,15 @@ def precedence_rank(schema: dict[str, Any], entity: str, attribute: str, source:
 async def main() -> int:
     global LAST_GRAPH
     ap = argparse.ArgumentParser()
-    ap.add_argument("--version", type=int, default=1, choices=(1, 2))
+    ap.add_argument(
+        "--version",
+        type=int,
+        choices=(1, 2),
+        help="which snapshot of the sources to sync (default 1, or the resumed run's)",
+    )
     ap.add_argument("--resume", metavar="TASK_ID")
     ap.add_argument("--fail-at", type=int, metavar="N", help="fail the Nth extraction on purpose")
-    ap.add_argument("--attempt", type=int, default=1)
+    ap.add_argument("--attempt", type=int, help="default: the next unused number today")
     args = ap.parse_args()
 
     schema = yaml.safe_load((COMPANY / "brain_schema.yaml").read_text())
@@ -298,8 +286,22 @@ async def main() -> int:
     db = connect(OUT / "brain.db", SCHEMA_SQL)
     card = Scorecard("Company brain")
 
-    clients = await make_clients()
-    task_id = args.resume or run_id("brain", args.attempt)
+    if args.resume and args.version is None:
+        # A resumed run syncs the sources the failed run was syncing, not the default set.
+        row = db.execute("SELECT version FROM run WHERE task_id=?", (args.resume,)).fetchone()
+        if row is None:
+            print(f"  no run recorded under {args.resume}")
+            db.close()
+            return 1
+        args.version = row["version"]
+    version = args.version or 1
+
+    try:
+        clients = await make_clients()
+    except Exception:
+        db.close()
+        raise
+    task_id = args.resume or run_id("brain", args.attempt or next_attempt(db, "brain"))
     print(f"  task {task_id}")
     failure: tuple[int, Item, str, str] | None = None
     changed: list[Item] = []
@@ -308,13 +310,13 @@ async def main() -> int:
         with clients.anthropic.task("company-brain", task_id=task_id):
             db.execute(
                 "INSERT OR REPLACE INTO run(task_id, started_at, status, version) VALUES (?,?,?,?)",
-                (task_id, utc_iso(), "running", args.version),
+                (task_id, utc_iso(), "running", version),
             )
 
             # ── collect ──────────────────────────────────────────────────────
-            repo_dir = COMPANY / f"repo_v{args.version}"
-            brand_file = COMPANY / f"brand_v{args.version}.md"
-            inbox = COMPANY / "inbox" / f"run{args.version}.json"
+            repo_dir = COMPANY / f"repo_v{version}"
+            brand_file = COMPANY / f"brand_v{version}.md"
+            inbox = COMPANY / "inbox" / f"run{version}.json"
             items: list[Item] = []
 
             with clients.anthropic.step("collect:repo") as s:
@@ -358,7 +360,8 @@ async def main() -> int:
                 }
 
                 changed: list[Item] = []
-                renamed = 0
+                renamed = reused = 0
+                deferred_ids: set[str] = set()
                 for item in items:
                     prior = known.get(item.item_id)
                     if prior is None:
@@ -389,8 +392,36 @@ async def main() -> int:
                             )
                             renamed += 1
                             continue
-                    if (item.item_id, item.hash) not in extracted:
+                    if (item.item_id, item.hash) in extracted:
+                        reused += 1
+                    else:
                         changed.append(item)
+                        if len(changed) > MAX_EXTRACTIONS_PER_RUN:
+                            deferred_ids.add(item.item_id)
+                    if item.item_id in deferred_ids:
+                        # A deferred item keeps the hash and text it was last extracted from.
+                        # Its extraction row is keyed on that hash; advancing the hash now,
+                        # with no extraction to match it, would make reconcile read every fact
+                        # the item asserts as withdrawn and remove them all in this run.
+                        db.execute(
+                            "INSERT INTO source_item(item_id, source, external_id, content_hash,"
+                            " text, url, first_seen_run, last_seen_run, status, missing_runs)"
+                            " VALUES (?,?,?,?,?,?,?,?, 'present', 0)"
+                            " ON CONFLICT(item_id) DO UPDATE SET"
+                            " last_seen_run=excluded.last_seen_run, status='present',"
+                            " missing_runs=0",
+                            (
+                                item.item_id,
+                                item.source,
+                                item.external_id,
+                                item.hash,
+                                item.text,
+                                item.url,
+                                task_id,
+                                task_id,
+                            ),
+                        )
+                        continue
                     db.execute(
                         "INSERT INTO source_item(item_id, source, external_id, content_hash, text,"
                         " url, first_seen_run, last_seen_run, status, missing_runs)"
@@ -422,9 +453,10 @@ async def main() -> int:
                         " WHERE item_id = ?",
                         (schema["removal"]["grace_runs"], row["item_id"]),
                     )
-                deferred = max(0, len(changed) - MAX_EXTRACTIONS_PER_RUN)
+                deferred = len(deferred_ids)
                 changed = changed[:MAX_EXTRACTIONS_PER_RUN]
                 s.set_attribute("changed", len(changed))
+                s.set_attribute("reused", reused)
                 s.set_attribute("renamed", renamed)
                 s.set_attribute("missing", len(gone))
                 s.set_attribute("deferred", deferred)
@@ -432,6 +464,7 @@ async def main() -> int:
                     json.dumps(
                         {
                             "changed": len(changed),
+                            "reused": reused,
                             "renamed": renamed,
                             "missing": len(gone),
                             "deferred": deferred,
@@ -439,21 +472,15 @@ async def main() -> int:
                     )
                 )
                 print(
-                    f"  diff: {len(changed)} changed, {renamed} renamed, {len(gone)} missing"
-                    + (f", {deferred} deferred" if deferred else "")
+                    f"  diff: {len(changed)} changed, {reused} reused, {renamed} renamed,"
+                    f" {len(gone)} missing" + (f", {deferred} deferred" if deferred else "")
                 )
 
             # ── extract ──────────────────────────────────────────────────────
-            extracted = cached = failed = redacted_items = 0
+            # Everything in `changed` has no extraction row for its current hash and prompt
+            # version: the diff step decided that, and there is nothing to re-check here.
+            extracted = failed = redacted_items = 0
             for n, item in enumerate(changed, start=1):
-                done = db.execute(
-                    "SELECT 1 FROM extraction WHERE item_id=? AND content_hash=?"
-                    " AND prompt_version=?",
-                    (item.item_id, item.hash, PROMPT_VERSION),
-                ).fetchone()
-                if done:
-                    cached += 1
-                    continue
                 clean, redactions = scrub(item.text)
                 if redactions:
                     redacted_items += 1
@@ -512,13 +539,13 @@ async def main() -> int:
                     failure = (n, item, clean, exc.code)
                     break
 
-            print(f"  extract: {extracted} new, {cached} cached, {failed} failed")
+            print(f"  extract: {extracted} new, {reused} reused, {failed} failed")
             if failure is not None:
                 raise ItemError(failure[3])
 
             # ── reconcile, render, check ─────────────────────────────────────
-            stats = reconcile(db, schema, task_id, args.version, clients.anthropic)
-            doc_version = render(db, schema, task_id, args.version, stats, clients.anthropic)
+            stats = reconcile(db, schema, task_id, version, clients.anthropic)
+            doc_version = render(db, schema, task_id, version, stats, clients.anthropic)
             qa = run_qa(db, doc_version, clients.anthropic)
 
             LAST_GRAPH = clients.anthropic.get_task_graph(task_id)
@@ -534,7 +561,7 @@ async def main() -> int:
                 "added / updated / removed": f"{stats['added']} / {stats['updated']} / {stats['removed']}",
                 "conflicts resolved": stats["conflicts"],
                 "items redacted": redacted_items,
-                "extractions (new / cached)": f"{extracted} / {cached}",
+                "extractions (new / reused)": f"{extracted} / {reused}",
                 "document": display(OUT / "brain.md"),
             }
         )
@@ -548,37 +575,55 @@ async def main() -> int:
         card.print()
         if qa["failures"]:
             print("  questions answered wrongly: " + ", ".join(qa["failures"]))
-        print(f"\n{graph_line(clients.anthropic, task_id)}\n")
+        print(f"\n{graph_line(clients, task_id)}\n")
         return 0 if stats["status"] != "held" and qa["rate"] >= 0.9 else 1
     except ItemError:
-        # The task scope has exited: the root node is marked failed in the graph and the
-        # provider failure is a failed llm_call node inside it. While this process still holds
-        # the graph, one SDK call retries exactly that step, with routing free to pick a live
-        # model. The retry lands in the same graph, linked to the node it replaces.
+        # The task scope has exited and the root node is marked failed in the graph. What can
+        # be done about it depends on what failed.
         n, item, clean, code = failure
         db.execute(
             "UPDATE run SET finished_at=?, status='failed', stats_json=? WHERE task_id=?",
             (utc_iso(), json.dumps({"error": code, "item": short_hash(item.item_id)}), task_id),
         )
         print(f"\n  extraction {n} of {len(changed)} failed: {code}")
+        graph = clients.anthropic.get_task_graph(task_id)
+        failed_calls = [node for node in graph.failed_nodes() if node.node_type == "llm_call"]
+        if not failed_calls:
+            # parse_failed: the provider answered twice and neither reply was JSON. Both calls
+            # succeeded as far as the graph knows, so there is no failed node to resume. The
+            # item has no extraction row, and the next run will simply try it again.
+            print("  the model returned no JSON for that item twice; nothing to resume.")
+            print(f"  Try again from a new process:\n    python run.py --resume {task_id}")
+            print(f"\n{graph_line(clients, task_id)}\n")
+            return 1
+        # A provider failure is a failed llm_call node inside the failed step. While this
+        # process still holds the graph, one SDK call retries that step, with routing free to
+        # pick a live model. The retry lands in the same graph, linked to the node it replaces.
         print("  retrying that one step with client.resume() ...")
-        # resume() sends no system prompt of its own, and with content_capture off it has no
-        # recorded output to rebuild from, so the instruction carries everything the step needs.
+        # resume() sends no system prompt of its own, so the instruction carries the rubric and
+        # the document. Two things it does that this loop does not: it prepends a summary of
+        # every step that finished before the failure (the verbatim-quote check is what keeps
+        # another document's facts off this one), and it samples at the SDK's own defaults
+        # rather than this loop's temperature and token cap. It is a retry of the step, not a
+        # byte-for-byte replay of the call.
         instruction = f"{rubric}\n\n<document>\n{clean}\n</document>"
         # Name the node. The step that wrapped the call is failed too, and resume() would
         # otherwise pick whichever unresolved failure is most recent.
-        graph = clients.anthropic.get_task_graph(task_id)
-        failed_call = [n for n in graph.failed_nodes() if n.node_type == "llm_call"][-1]
+        failed_call = failed_calls[-1]
         try:
             resp = await clients.anthropic.resume(
                 task_id, node_id=failed_call.node_id, instruction=instruction
             )
+            facts = validate_facts(parse_json(resp.text), clean, schema)
+        except ItemError:
+            print("  the retry did not return JSON either; nothing was recorded for that item.")
+            print(f"  Try again from a new process:\n    python run.py --resume {task_id}")
+            return 1
         except Exception as exc:
             # The retry is routed to a live model, so if it fails too the provider itself is
             # refusing us -- most often a bad or expired ANTHROPIC_API_KEY.
             print(f"  retry also failed ({type(exc).__name__}); check ANTHROPIC_API_KEY")
             return 1
-        facts = validate_facts(parse_json(resp.text), clean, schema)
         db.execute(
             "INSERT OR REPLACE INTO extraction VALUES (?,?,?,?,?,?)",
             (
@@ -604,7 +649,7 @@ async def main() -> int:
         remaining = len(changed) - n
         print(f"  {remaining} extractions were never reached. Finish the run from a new process:")
         print(f"    python run.py --resume {task_id}")
-        print(f"\n{graph_line(clients.anthropic, task_id)}\n")
+        print(f"\n{graph_line(clients, task_id)}\n")
         return 1
     finally:
         LAST_GRAPH = clients.anthropic.get_task_graph(task_id) or LAST_GRAPH
@@ -662,37 +707,27 @@ def reconcile(db, schema, task_id, version, client) -> dict[str, Any]:
                 if held is None:
                     proposed[key] = candidate
                     continue
-                if rank > held["rank"]:
+                # The higher-ranked source wins; on a tie, the first one seen. The rows come
+                # back in no particular order, so the record of a disagreement cannot depend
+                # on which side happened to be read first.
+                winner, loser = (candidate, held) if rank > held["rank"] else (held, candidate)
+                if rank != held["rank"] and normalize(winner["value"]) != normalize(loser["value"]):
                     # Two sources disagree and one of them is authoritative here. Record the
                     # loser: an unexplained overwrite is indistinguishable from a bug.
-                    if normalize(held["value"]) != normalize(candidate["value"]):
-                        conflicts += 1
-                        db.execute(
-                            "INSERT INTO conflict VALUES (?,?,?,?,?,?,?)",
-                            (
-                                task_id,
-                                fact["entity"],
-                                fact["attribute"],
-                                candidate["source"],
-                                candidate["value"],
-                                held["source"],
-                                held["value"],
-                            ),
-                        )
-                    proposed[key] = candidate
-
-        # Single-valued attributes: a new value replaces the old fact rather than joining it.
-        for key, fact in list(proposed.items()):
-            if is_multi(schema, fact["entity"], fact["attribute"]):
-                continue
-            for other_key, other in list(proposed.items()):
-                if other_key == key or (other["entity"], other["attribute"]) != (
-                    fact["entity"],
-                    fact["attribute"],
-                ):
-                    continue
-                if other["rank"] < fact["rank"]:
-                    proposed.pop(other_key, None)
+                    conflicts += 1
+                    db.execute(
+                        "INSERT INTO conflict VALUES (?,?,?,?,?,?,?)",
+                        (
+                            task_id,
+                            fact["entity"],
+                            fact["attribute"],
+                            winner["source"],
+                            winner["value"],
+                            loser["source"],
+                            loser["value"],
+                        ),
+                    )
+                proposed[key] = winner
 
         existing = {r["fact_key"]: r for r in db.execute("SELECT * FROM fact")}
         active_before = sum(1 for r in existing.values() if r["status"] == "active")
@@ -728,7 +763,9 @@ def reconcile(db, schema, task_id, version, client) -> dict[str, Any]:
             )
 
         never_absence = set(schema["removal"].get("never_absence_remove", []))
-        removed = 0
+        # Removals are decided first and applied second, so that the anomaly check below can
+        # look at the whole set before any of it happens.
+        removals: list[tuple[str, tuple]] = []
         for key, row in existing.items():
             if key in proposed or row["status"] != "active":
                 continue
@@ -741,34 +778,43 @@ def reconcile(db, schema, task_id, version, client) -> dict[str, Any]:
             if item_present:
                 # The document still exists and stopped saying it. That is a decision.
                 reason = "no longer stated by its source"
-                db.execute(
-                    "UPDATE fact SET status='removed', removed_version=?, removed_reason=?"
-                    " WHERE fact_key=?",
-                    (task_id, reason, key),
+                removals.append(
+                    (
+                        "UPDATE fact SET status='removed', removed_version=?, removed_reason=?"
+                        " WHERE fact_key=?",
+                        (task_id, reason, key),
+                    )
                 )
-                removed += 1
             else:
                 # The document is gone. A deleted file and a failed fetch look the same for
                 # one run, so wait before believing it.
                 missing = row["missing_runs"] + 1
                 if missing >= schema["removal"]["grace_runs"]:
-                    db.execute(
-                        "UPDATE fact SET status='removed', missing_runs=?, removed_version=?,"
-                        " removed_reason=? WHERE fact_key=?",
-                        (missing, task_id, "source removed", key),
+                    removals.append(
+                        (
+                            "UPDATE fact SET status='removed', missing_runs=?, removed_version=?,"
+                            " removed_reason=? WHERE fact_key=?",
+                            (missing, task_id, "source removed", key),
+                        )
                     )
-                    removed += 1
                 else:
                     db.execute("UPDATE fact SET missing_runs=? WHERE fact_key=?", (missing, key))
 
-        active = db.execute("SELECT COUNT(*) c FROM fact WHERE status='active'").fetchone()["c"]
+        removed = len(removals)
         threshold = schema["removal"]["anomaly_threshold"]
         status, held_reason = "ok", ""
-        if active_before and removed / max(active_before, 1) > threshold:
+        if active_before and removed / active_before > threshold:
+            # Held means held: none of the removals is applied and nothing is published. The
+            # fact table keeps what it had, and the next run decides again from scratch.
             status, held_reason = (
                 "held",
                 f"{removed} of {active_before} facts would be removed (> {threshold:.0%})",
             )
+        else:
+            for sql, params in removals:
+                db.execute(sql, params)
+
+        active = db.execute("SELECT COUNT(*) c FROM fact WHERE status='active'").fetchone()["c"]
         quote_failures = db.execute(
             "SELECT COUNT(*) c FROM fact WHERE status='active' AND (quote IS NULL OR quote='')"
         ).fetchone()["c"]
@@ -797,12 +843,19 @@ def reconcile(db, schema, task_id, version, client) -> dict[str, Any]:
 def render(db, schema, task_id, version, stats, client) -> int:
     """Write brain.md and a changelog. Deterministic, so a re-render is free and diffable."""
     with client.step("render") as s:
+        prior = db.execute("SELECT * FROM doc_version ORDER BY version DESC LIMIT 1").fetchone()
+        if stats["status"] == "held":
+            # Nothing is published from a held run. The document on disk stays the last one
+            # that passed, and the gate at the end says why.
+            s.set_attribute("held", True)
+            s.set_output(json.dumps({"held": True}))
+            print("  render: held, brain.md left as it was")
+            return prior["version"] if prior else 0
         facts = db.execute(
             "SELECT * FROM fact WHERE status='active' ORDER BY entity, attribute, value"
         ).fetchall()
         facts_hash = content_hash("|".join(f"{f['fact_key']}={f['value_norm']}" for f in facts))
-        prior = db.execute("SELECT * FROM doc_version ORDER BY version DESC LIMIT 1").fetchone()
-        if prior and prior["facts_hash"] == facts_hash and stats["status"] != "held":
+        if prior and prior["facts_hash"] == facts_hash:
             s.set_attribute("no_change", True)
             s.set_output(json.dumps({"no_change": True}))
             print("  render: nothing changed")
@@ -884,7 +937,7 @@ def run_qa(db, doc_version: int, client) -> dict[str, Any]:
     with client.step("qa") as s:
         spec = json.loads((COMPANY / "qa.json").read_text())
         doc = (OUT / "brain.md").read_text().lower()
-        key = f"v{min(doc_version, 3)}"
+        key = f"v{max(1, min(doc_version, 3))}"
         passed, failures = 0, []
         for q in spec["questions"]:
             expect = q["expect"][key]

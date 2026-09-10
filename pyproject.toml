@@ -74,6 +74,7 @@ pythonpath = ["."]
 [tool.ruff]
 target-version = "py310"
 line-length = 100
-# Notebooks are checked by tests/test_docs_examples.py (every cell compiles, no stored
-# output); ruff's notebook rules were never part of CI and their E401s predate examples/.
-extend-exclude = ["*.ipynb"]
+
+[tool.ruff.lint.per-file-ignores]
+# The notebooks' first cell does `import os, getpass` on one line, as a notebook would.
+"*.ipynb" = ["E401"]

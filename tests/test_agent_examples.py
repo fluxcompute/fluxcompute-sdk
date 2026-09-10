@@ -17,6 +17,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import re
+import shutil
 import sqlite3
 import sys
 from pathlib import Path
@@ -41,6 +42,18 @@ def _load(name: str, path: Path, monkeypatch):
     monkeypatch.setitem(sys.modules, name, module)
     spec.loader.exec_module(module)
     return module
+
+
+def _load_common(monkeypatch):
+    """_common with its .env loader disabled.
+
+    require_keys() reads examples/agents/.env, which is exactly where the module tells a user
+    to put a real FLUXCOMPUTE_KEY. The fixtures below delete that variable so the SDK-only
+    path is what runs; a loader that put it back would turn every test into a live one.
+    """
+    common = _load("_common", AGENTS / "_common.py", monkeypatch)
+    monkeypatch.setattr(common, "load_dotenv", lambda *args, **kwargs: None)
+    return common
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -92,12 +105,22 @@ FABRICATED = {
 }
 
 
-def _document_from(kwargs: dict) -> str:
+def _text_of(content) -> str:
     # After the SDK's cache manager, message content is a list of blocks, not a string.
-    raw = kwargs["messages"][-1]["content"]
-    if isinstance(raw, str):
-        return raw
-    return " ".join(b.get("text", "") for b in raw if isinstance(b, dict))
+    if isinstance(content, str):
+        return content
+    return " ".join(b.get("text", "") for b in content if isinstance(b, dict))
+
+
+def _document_from(kwargs: dict) -> str:
+    return _text_of(kwargs["messages"][-1]["content"])
+
+
+def _everything_sent(kwargs: dict) -> str:
+    """Every message in the request, so a test can ask what the provider was shown."""
+    parts = [_text_of(kwargs["system"])] if isinstance(kwargs.get("system"), (str, list)) else []
+    parts += [_text_of(m["content"]) for m in kwargs["messages"]]
+    return "\n".join(parts)
 
 
 def _answer(document: str) -> str:
@@ -117,15 +140,22 @@ def _answer(document: str) -> str:
 class _ScriptedMessages:
     def __init__(self) -> None:
         self.models: list[str] = []
+        self.prompts: list[str] = []  # everything the provider was shown, per call
+        self.prose_for: str = ""  # a document containing this gets prose back, never JSON
 
     async def create(self, **kwargs):
         self.models.append(kwargs["model"])
+        self.prompts.append(_everything_sent(kwargs))
         if kwargs["model"] == "claude-3-5-haiku-20241022":
             raise RuntimeError("model_not_found: this model was retired")
+        if self.prose_for and self.prose_for in self.prompts[-1]:
+            text = "Sorry, I cannot turn that document into facts."
+        else:
+            text = _answer(_document_from(kwargs))
         return SimpleNamespace(
             model=kwargs["model"],
             stop_reason="end_turn",
-            content=[SimpleNamespace(type="text", text=_answer(_document_from(kwargs)))],
+            content=[SimpleNamespace(type="text", text=text)],
             usage=SimpleNamespace(
                 input_tokens=400,
                 output_tokens=120,
@@ -159,7 +189,7 @@ def brain(tmp_path, monkeypatch):
     monkeypatch.delenv("FLUX_CONTENT_CAPTURE", raising=False)
     monkeypatch.syspath_prepend(str(AGENTS))
 
-    common = _load("_common", AGENTS / "_common.py", monkeypatch)
+    common = _load_common(monkeypatch)
     module = _load("brain_run", AGENTS / "company_brain" / "run.py", monkeypatch)
     monkeypatch.setattr(module, "OUT", tmp_path)
 
@@ -218,11 +248,21 @@ async def test_precedence_is_data_not_a_prompt(brain):
 
 async def test_sender_allowlist_runs_before_the_model(brain):
     """A prompt injection from an unlisted sender must not reach a model at all."""
-    await _run(brain, "--version", "1")
+    assert await _run(brain, "--version", "1") == 0
     doc = (brain.out / "brain.md").read_text().lower()
     assert "bob vance" not in doc
-    prompts = " ".join(brain.fake.messages.models)
+    prompts = "\n".join(brain.fake.messages.prompts).lower()
+    assert prompts, "the provider was called"
     assert "ignore your previous instructions" not in prompts
+    assert "bob vance" not in prompts
+    # And the sender the allowlist admits is read by address, not by the whole header.
+    assert "harbour blue" in prompts  # the brand file did reach the model
+
+
+async def test_allowlist_reads_the_address_not_the_display_name(brain):
+    common = brain.common
+    _, addr, _ = common.split_address("Priya Raman <PRIYA@northwind.example.com>")
+    assert addr == "priya@northwind.example.com"
 
 
 async def test_personal_data_is_scrubbed_before_the_model_sees_it(brain):
@@ -230,11 +270,27 @@ async def test_personal_data_is_scrubbed_before_the_model_sees_it(brain):
     assert "900412" not in (brain.out / "brain.md").read_text()
 
 
-async def test_unchanged_run_makes_no_llm_calls(brain):
+async def test_unchanged_run_makes_no_llm_calls(brain, capsys):
     await _run(brain, "--version", "1")
     before = len(brain.fake.messages.models)
     assert await _run(brain, "--version", "1", "--attempt", "2") == 0
     assert len(brain.fake.messages.models) == before
+    # The number the reader wants is how much work was reused, and it is not zero.
+    assert "diff: 0 changed, 17 reused" in capsys.readouterr().out
+
+
+async def test_back_to_back_runs_get_their_own_task_ids(brain):
+    """The README's sequence passes no --attempt. Each run must still be its own task: the
+    second run's row must not replace the first's, and its changelog must not inherit the
+    first run's conflicts through a shared id."""
+    assert await _run(brain, "--version", "1") == 0
+    assert "over `repo` (49)" in (brain.out / "brain.changelog.md").read_text()
+    assert await _run(brain, "--version", "2") == 0
+    db = sqlite3.connect(brain.out / "brain.db")
+    ids = [r[0] for r in db.execute("SELECT task_id FROM run ORDER BY task_id")]
+    db.close()
+    assert len(ids) == 2 and ids[0] != ids[1]
+    assert "over `repo` (49)" not in (brain.out / "brain.changelog.md").read_text()
 
 
 async def test_a_rename_is_not_a_deletion(brain):
@@ -317,6 +373,63 @@ async def test_resume_from_a_fresh_process_finishes_the_run(brain):
     assert len(brain.fake.messages.models) - calls_before == 15
 
 
+async def test_resume_syncs_the_version_the_failed_run_was_syncing(brain):
+    """The printed hint is `--resume <task>` with no --version. Resuming has to read the
+    version back from the run table, or a failed v2 sync silently becomes a v1 sync."""
+    assert await _run(brain, "--version", "1") == 0
+    assert await _run(brain, "--version", "2", "--fail-at", "2") == 1
+    task_id = brain.module.LAST_GRAPH.task_id
+    assert await _run(brain, "--resume", task_id) == 0
+    db = sqlite3.connect(brain.out / "brain.db")
+    version, status = db.execute(
+        "SELECT version, status FROM run WHERE task_id=?", (task_id,)
+    ).fetchone()
+    db.close()
+    assert (version, status) == (2, "ok")
+    assert "Kestrel" not in (brain.out / "brain.md").read_text()  # v2 dropped it
+
+
+async def test_a_reply_that_is_never_json_stops_cleanly(brain, capsys):
+    """Both provider calls succeed and neither is JSON. That leaves no failed llm_call node,
+    so there is nothing for resume() to retry; the run must say so and exit 1, not crash."""
+    brain.fake.messages.prose_for = "Harbour Blue"
+    assert await _run(brain, "--version", "1") == 1
+    out = capsys.readouterr().out
+    assert "failed: parse_failed" in out
+    assert "nothing to resume" in out
+    assert "--resume" in out
+    db = sqlite3.connect(brain.out / "brain.db")
+    assert db.execute("SELECT status FROM run").fetchone()[0] == "failed"
+    db.close()
+
+
+async def test_a_held_run_publishes_nothing(brain, tmp_path, capsys):
+    """Emptying most of the repository would remove most facts. Held has to mean held: no
+    removal is applied, brain.md is not rewritten, and the gate says why."""
+    fixtures = tmp_path / "fixtures"
+    shutil.copytree(AGENTS / "fixtures", fixtures)
+    brain.monkeypatch.setattr(brain.module, "COMPANY", fixtures)
+    assert await _run(brain, "--version", "1") == 0
+    published = (brain.out / "brain.md").read_text()
+    db = sqlite3.connect(brain.out / "brain.db")
+    active_before = db.execute("SELECT COUNT(*) FROM fact WHERE status='active'").fetchone()[0]
+    db.close()
+
+    for path in (fixtures / "repo_v2").rglob("*.md"):
+        path.write_text("# Under construction\n\nNothing here yet.\n")
+    assert await _run(brain, "--version", "2") == 1
+    out = capsys.readouterr().out
+    assert "HELD" in out and "render: held" in out
+    assert (brain.out / "brain.md").read_text() == published
+    db = sqlite3.connect(brain.out / "brain.db")
+    assert db.execute("SELECT COUNT(*) FROM fact WHERE status='removed'").fetchone()[0] == 0
+    assert (
+        db.execute("SELECT COUNT(*) FROM fact WHERE status='active'").fetchone()[0]
+        >= active_before
+    )
+    db.close()
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # The shared scrubber and error vocabulary, which every agent depends on
 # ─────────────────────────────────────────────────────────────────────────────
@@ -325,7 +438,7 @@ async def test_resume_from_a_fresh_process_finishes_the_run(brain):
 @pytest.fixture
 def common(monkeypatch):
     monkeypatch.syspath_prepend(str(AGENTS))
-    return _load("_common", AGENTS / "_common.py", monkeypatch)
+    return _load_common(monkeypatch)
 
 
 def test_scrubber_labels_each_category_correctly(common):
@@ -341,6 +454,41 @@ def test_scrubber_labels_each_category_correctly(common):
     assert counts == {"CARD": 1, "PHONE": 1, "EMAIL": 1, "ANTHROPIC_KEY": 1}
     for secret in ("4111", "900412", "a@b.com", "sk-ant-"):
         assert secret not in text
+    assert "[REDACTED:CARD], mobile" in text  # the number goes, the separator after it stays
+
+
+def test_dates_and_version_numbers_are_not_phone_numbers(common):
+    """A date redacted as a phone number protects nobody, and a quote through it can no
+    longer be checked against its source, so the fact is silently dropped."""
+    text, counts = common.scrub(
+        "Released 2026-09-10 at 12:30, pinned to 0.3.0 (2024); support ends 2026-12-31T23:59:00Z."
+        " Call +44 7700 900412 with questions about ticket 123456789012."
+    )
+    assert counts == {"PHONE": 2}  # the mobile and the twelve-digit ticket; nothing else
+    for kept in ("2026-09-10 at 12:30", "0.3.0 (2024)", "2026-12-31T23:59:00Z"):
+        assert kept in text
+    assert common.quote_is_verbatim("support ends 2026-12-31T23:59:00Z", text)
+
+
+def test_a_quote_is_verbatim_whatever_its_case(common):
+    """Haiku quotes 'from 1 November our European office...' for a body that reads 'From 1
+    November...'. The sentence is there; a case-sensitive check called it fabricated."""
+    source = "Subject: New office\n\nFrom 1 November our European office is in Rotterdam."
+    assert common.quote_is_verbatim("from 1 November our European office is in Rotterdam", source)
+    assert common.quote_is_verbatim("FROM 1 NOVEMBER OUR EUROPEAN OFFICE", source)
+    assert not common.quote_is_verbatim("our European office is in Antwerp", source)
+    assert not common.quote_is_verbatim("", source)
+
+
+def test_mailbox_dates_are_read_in_every_form_a_client_writes(common):
+    for raw in (
+        "2026-09-09T09:14:00+00:00",
+        "2026-09-09T09:14:00Z",
+        "Tue, 9 Sep 2026 09:14:00 +0000",
+        "2026-09-09T09:14:00",
+    ):
+        assert common.parse_date(raw) == "2026-09-09T09:14:00+00:00", raw
+    assert common.parse_date("2026-09-09T18:14:00+09:00") == "2026-09-09T09:14:00+00:00"
 
 
 def test_error_codes_avoid_the_spend_vocabulary(common):
@@ -422,6 +570,7 @@ def _classify_answer(user: str) -> str:
 class _ScriptedCrmMessages(_ScriptedMessages):
     async def create(self, **kwargs):
         self.models.append(kwargs["model"])
+        self.prompts.append(_everything_sent(kwargs))
         return SimpleNamespace(
             model=kwargs["model"],
             stop_reason="end_turn",
@@ -449,7 +598,7 @@ def inbox(tmp_path, monkeypatch):
     monkeypatch.delenv("FLUXCOMPUTE_KEY", raising=False)
     monkeypatch.syspath_prepend(str(AGENTS))
 
-    common = _load("_common", AGENTS / "_common.py", monkeypatch)
+    common = _load_common(monkeypatch)
     module = _load("crm_run", AGENTS / "crm_inbox" / "run.py", monkeypatch)
     monkeypatch.setattr(module, "OUT", tmp_path)
 
@@ -467,14 +616,54 @@ async def _run_inbox(inbox, *argv: str) -> int:
     return await inbox.module.main()
 
 
+def _own_inbox(inbox, messages: list[dict], labels: list[dict] | None = None) -> None:
+    """Point the agent at a copy of the fixtures whose run-1 mailbox is `messages`.
+
+    The shipped inboxes have no thread with two different people in it and no message without
+    a Message-ID, so the cases that need those are written here, in the same JSON shape.
+    """
+    fixtures = inbox.out / "fixtures"
+    shutil.copytree(AGENTS / "fixtures", fixtures)
+    (fixtures / "inbox_crm" / "run1.json").write_text(json.dumps(messages))
+    spec = json.loads((fixtures / "crm_labels.json").read_text())
+    spec["run1"] = labels or []
+    (fixtures / "crm_labels.json").write_text(json.dumps(spec))
+    inbox.monkeypatch.setattr(inbox.module, "COMPANY", fixtures)
+
+
+def _mail(sender: str, subject: str, body: str, date: str, **extra) -> dict:
+    return {
+        "from": sender,
+        "to": "hello@northwind.example.com",
+        "subject": subject,
+        "body": body,
+        "date": date,
+        **extra,
+    }
+
+
+def _crm_rows(inbox) -> list[dict]:
+    db = sqlite3.connect(inbox.out / "crm.db")
+    db.row_factory = sqlite3.Row
+    rows = [dict(r) for r in db.execute("SELECT * FROM crm ORDER BY thread_key")]
+    db.close()
+    return rows
+
+
 async def test_machine_mail_never_reaches_a_model(inbox, capsys):
     """An out-of-office and a newsletter are decided by their headers, before any spend."""
-    await _run_inbox(inbox, "--run", "1")
-    prompts = len(inbox.fake.messages.models)
-    rows = (inbox.out / "crm.csv").read_text()
-    assert "auto-replied" not in rows.lower()
-    # 16 threads, minus two machine mails and one quarantined phishing message.
-    assert prompts == 14
+    assert await _run_inbox(inbox, "--run", "1") == 0
+    db = sqlite3.connect(inbox.out / "crm.db")
+    ignored = db.execute("SELECT COUNT(*) FROM message WHERE gate='ignored'").fetchone()[0]
+    classified_anyway = db.execute(
+        "SELECT COUNT(*) FROM classification WHERE message_id IN"
+        " (SELECT message_id FROM message WHERE gate='ignored')"
+    ).fetchone()[0]
+    db.close()
+    assert ignored == 2 and classified_anyway == 0
+    # 18 messages, one dropped as a forward of another: 17 kept. Minus the two machine mails
+    # and the one quarantined phishing message, 14 reach a model.
+    assert len(inbox.fake.messages.models) == 14
     out = capsys.readouterr().out
     assert "nodes recorded in-process" in out and "/ui/#task=" not in out
 
@@ -516,21 +705,149 @@ async def test_priority_is_computed_in_code(inbox):
 
 
 async def test_a_reply_updates_its_thread_instead_of_inserting(inbox):
-    await _run_inbox(inbox, "--run", "1")
+    assert await _run_inbox(inbox, "--run", "1") == 0
     first = len((inbox.out / "crm.csv").read_text().strip().splitlines())
-    await _run_inbox(inbox, "--run", "2", "--attempt", "2")
+    assert await _run_inbox(inbox, "--run", "2", "--attempt", "2") == 0
     rows = (inbox.out / "crm.csv").read_text().strip().splitlines()
     # Run 2 brings three messages, one of which continues an existing thread.
     assert len(rows) == first + 2
 
 
 async def test_rerunning_the_same_inbox_changes_nothing(inbox):
-    await _run_inbox(inbox, "--run", "1")
+    assert await _run_inbox(inbox, "--run", "1") == 0
     before_csv = (inbox.out / "crm.csv").read_text()
     calls = len(inbox.fake.messages.models)
-    await _run_inbox(inbox, "--run", "1", "--attempt", "2")
+    assert await _run_inbox(inbox, "--run", "1", "--attempt", "2") == 0
     assert (inbox.out / "crm.csv").read_text() == before_csv
     assert len(inbox.fake.messages.models) == calls
+
+
+async def test_resume_reads_the_inbox_the_failed_run_was_reading(inbox):
+    """`--resume <task>` carries no --run. The task's own row says which mailbox it was on."""
+    assert await _run_inbox(inbox, "--run", "1") == 0
+    assert await _run_inbox(inbox, "--run", "2") == 0
+    second = inbox.common.run_id("crm", 2)  # no --attempt passed: the second run today is 02
+    assert await _run_inbox(inbox, "--resume", second) == 0
+    db = sqlite3.connect(inbox.out / "crm.db")
+    assert db.execute("SELECT inbox FROM run WHERE task_id=?", (second,)).fetchone()[0] == 2
+    assert db.execute("SELECT COUNT(*) FROM run").fetchone()[0] == 2
+    db.close()
+
+
+async def test_a_machine_reply_on_an_open_thread_does_not_erase_it(inbox):
+    """The thread's record is led by its newest message that passed the gate, so an
+    out-of-office replying to a support request cannot turn the request into 'ignored'."""
+    _own_inbox(
+        inbox,
+        [
+            _mail(
+                "Sam Ortega <sam.ortega@globex-freight.example>",
+                "Planning API returning 502s since 06:00",
+                "Every call to the planning API has returned a 502 since six this morning.",
+                "2026-09-09T06:10:00+00:00",
+                message_id="<t1@globex-freight.example>",
+            ),
+            _mail(
+                "Sam Ortega <sam.ortega@globex-freight.example>",
+                "Automatic reply: Planning API returning 502s since 06:00",
+                "I am out of the office until Monday and will reply then.",
+                "2026-09-09T06:10:05+00:00",
+                message_id="<t2@globex-freight.example>",
+                in_reply_to="<t1@globex-freight.example>",
+                auto_submitted="auto-replied",
+            ),
+        ],
+    )
+    assert await _run_inbox(inbox, "--run", "1") == 0
+    (row,) = _crm_rows(inbox)
+    assert row["request_type"] == "support" and row["status"] != "ignored"
+    assert row["msg_count"] == 2 and row["last_msg_at"] == "2026-09-09T06:10:05+00:00"
+    assert len(inbox.fake.messages.models) == 1  # the auto-reply never reached a model
+
+
+async def test_messages_without_a_message_id_each_get_a_row(inbox):
+    _own_inbox(
+        inbox,
+        [
+            _mail(
+                "Ana Ruiz <ana@cascade-carriers.example>",
+                "Webhook retries not firing",
+                "Our webhook retries stopped firing after the weekend deploy, can you check?",
+                "2026-09-09T09:00:00+00:00",
+            ),
+            _mail(
+                "Ben Achebe <ben@breadbasket-bakeries.example>",
+                "Do you do last-mile grocery delivery routing?",
+                "We run forty vans out of two depots and want to know if you cover last mile.",
+                "2026-09-09T09:30:00+00:00",
+            ),
+        ],
+    )
+    assert await _run_inbox(inbox, "--run", "1") == 0
+    rows = _crm_rows(inbox)
+    assert len(rows) == 2
+    assert {r["request_type"] for r in rows} == {"support", "sales_inquiry"}
+
+
+async def test_forget_rebuilds_a_thread_that_keeps_other_people(inbox):
+    """The row for a thread the erased person was newest in was built from their message.
+    It has to be rebuilt from what remains, now, not on a next run that may never touch it."""
+    _own_inbox(
+        inbox,
+        [
+            _mail(
+                "Lena Bright <lena@cascade-carriers.example>",
+                "Webhook retries not firing",
+                "Our webhook retries stopped firing after the weekend deploy, can you check?",
+                "2026-09-09T09:00:00+00:00",
+                message_id="<w1@cascade-carriers.example>",
+            ),
+            _mail(
+                "Nadia Farr <nadia@cascade-carriers.example>",
+                "Re: Webhook retries not firing",
+                "Adding to Lena's note: the retry queue shows zero attempts since Saturday night.",
+                "2026-09-09T11:00:00+00:00",
+                message_id="<w2@cascade-carriers.example>",
+                in_reply_to="<w1@cascade-carriers.example>",
+            ),
+        ],
+    )
+    assert await _run_inbox(inbox, "--run", "1") == 0
+    (row,) = _crm_rows(inbox)
+    assert "Saturday night" in row["quote"] and row["msg_count"] == 2
+
+    assert await _run_inbox(inbox, "--forget", "nadia@cascade-carriers.example") == 0
+    (row,) = _crm_rows(inbox)
+    assert row["msg_count"] == 1 and row["last_msg_at"] == "2026-09-09T09:00:00+00:00"
+    assert "Saturday night" not in row["quote"] and "weekend deploy" in row["quote"]
+    assert "Saturday night" not in (inbox.out / "crm.csv").read_text()
+
+
+async def test_a_reply_that_is_all_quoted_history_is_not_a_duplicate(inbox):
+    """Two unrelated messages whose bodies are empty after quote stripping must both be kept;
+    an empty body is not evidence that one message is a copy of the other."""
+    quoted = "> thanks, will do\n> -- sent from my phone"
+    _own_inbox(
+        inbox,
+        [
+            _mail(
+                "Ana Ruiz <ana@cascade-carriers.example>",
+                "Re: Webhook retries not firing",
+                quoted,
+                "2026-09-09T09:00:00+00:00",
+                message_id="<q1@cascade-carriers.example>",
+            ),
+            _mail(
+                "Ben Achebe <ben@breadbasket-bakeries.example>",
+                "Re: Do you do last-mile grocery delivery routing?",
+                quoted,
+                "2026-09-09T09:30:00+00:00",
+                message_id="<q2@breadbasket-bakeries.example>",
+            ),
+        ],
+    )
+    assert await _run_inbox(inbox, "--run", "1") == 0
+    assert len(_crm_rows(inbox)) == 2
 
 
 async def test_forget_erases_a_sender_without_needing_a_provider(inbox):

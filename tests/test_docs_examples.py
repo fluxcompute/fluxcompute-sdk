@@ -12,9 +12,21 @@ import re
 import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-# rglob, not glob: a notebook or script one directory down must not silently escape the checks.
-NOTEBOOKS = sorted((ROOT / "examples").rglob("*.ipynb"))
-EXAMPLE_SCRIPTS = sorted((ROOT / "examples").rglob("*.py"))
+
+
+def _under_examples(pattern: str) -> list[pathlib.Path]:
+    """rglob, not glob: a notebook or script one directory down must not silently escape the
+    checks. Dot-directories are skipped: Jupyter's .ipynb_checkpoints/ copies keep their
+    outputs, and a .venv under examples/ is not an example."""
+    return sorted(
+        p
+        for p in (ROOT / "examples").rglob(pattern)
+        if not any(part.startswith(".") for part in p.relative_to(ROOT).parts)
+    )
+
+
+NOTEBOOKS = _under_examples("*.ipynb")
+EXAMPLE_SCRIPTS = _under_examples("*.py")
 
 # Names removed in 0.3.0; docs must not reference them.
 REMOVED_SYMBOLS = (

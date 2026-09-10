@@ -15,7 +15,8 @@ What this module owns, so the agents can stay about their own domain:
   LLM calls       call() -- rubric as a system MESSAGE, JSON parsed, one repair retry
   safety          scrub() -- secrets and PII removed before anything reaches a model
   errors          ItemError -- a fixed vocabulary, so no content leaks into a node's error
-  storage         connect() -- SQLite as the agent's own checkpoint
+  mail            split_address(), strip_quoted(), decode_qp(), decode_header(), parse_date()
+  storage         connect(), next_attempt() -- SQLite as the agent's own checkpoint
   reporting       Scorecard, graph_line()
 """
 
@@ -127,7 +128,7 @@ class ItemError(RuntimeError):
     detail stays in the local database.
 
     The codes also avoid the words the SDK's failure classifier reads as a spend problem
-    (rate limit, quota, billing, credit), which would otherwise mislabel the node.
+    (rate limit, quota, billing, credit balance), which would otherwise mislabel the node.
     """
 
     def __init__(self, code: str):
@@ -155,9 +156,22 @@ _SECRETS: tuple[tuple[str, re.Pattern[str]], ...] = (
     # CARD before PHONE, and the order is load-bearing: the phone pattern is a superset of
     # any card-shaped run of digits, so with PHONE first every card was redacted (safe) but
     # reported as a phone number (wrong). The counts are what a reviewer reads.
-    ("CARD", re.compile(r"\b(?:\d[ \-]?){13,16}\b")),
-    ("PHONE", re.compile(r"\+?\d[\d\s().\-]{8,}\d")),
+    # 13 to 16 digits, ending on a digit so the separator after the number survives.
+    ("CARD", re.compile(r"\b\d(?:[ \-]?\d){12,15}\b")),
+    # 10 to 15 digits with at most two separator characters between any two of them. The
+    # digit floor is what keeps a version number, a year in brackets or a short ticket id out.
+    ("PHONE", re.compile(r"\+?\d(?:[\s().\-]{0,2}\d){9,14}")),
 )
+
+# An ISO date is a run of digits and separators, which is exactly what a phone number looks
+# like to a regular expression. Dates are set aside before the patterns run and put back
+# afterwards: a date redacted as a phone number protects nobody, and a quote through it can no
+# longer be checked against the source.
+_DATE = re.compile(
+    r"\b\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?\b"
+)
+_PUA = 0xE000  # private-use code points stand in for the parked dates
+_PARKED = re.compile("[\ue000-\uf8ff]")
 
 
 def normalize(text: str) -> str:
@@ -188,11 +202,25 @@ def scrub(text: str) -> tuple[str, dict[str, int]]:
     Returns the redacted text and a count per category, so a step can record that redaction
     happened without recording what was redacted.
     """
+    parked: list[str] = []
+
+    def park(m: re.Match[str]) -> str:
+        if len(parked) >= 0xF8FF - _PUA:
+            return m.group()
+        parked.append(m.group())
+        return chr(_PUA + len(parked) - 1)
+
+    text = _DATE.sub(park, text)
     counts: dict[str, int] = {}
     for label, pattern in _SECRETS:
         text, n = pattern.subn(f"[REDACTED:{label}]", text)
         if n:
             counts[label] = counts.get(label, 0) + n
+    if parked:
+        text = _PARKED.sub(
+            lambda m: parked[i] if (i := ord(m.group()) - _PUA) < len(parked) else m.group(),
+            text,
+        )
     return text, counts
 
 
@@ -201,12 +229,16 @@ def quote_is_verbatim(quote: str, source: str) -> bool:
 
     A model that must quote its source verbatim cannot invent the claim without inventing a
     string that is checkably absent. Validated in code, never by asking the model nicely.
+
+    Case is not part of the check. A model quoting from mid-sentence lowercases the first
+    word, and whether a sentence exists in the source does not depend on how it is cased;
+    whitespace, curly quotes and HTML entities are likewise normalised on both sides.
     """
     if not quote or not quote.strip():
         return False
     if "[REDACTED:" in quote:
         return False
-    return normalize(quote) in normalize(source)
+    return normalize(quote).lower() in normalize(source).lower()
 
 
 def utc_now() -> datetime:
@@ -221,21 +253,93 @@ def utc_iso(dt: datetime | None = None) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Mail: the parts of reading a mailbox that both agents need, kept in one place
+# ─────────────────────────────────────────────────────────────────────────────
+
+_QUOTED = re.compile(r"^\s*>.*$", re.MULTILINE)
+_REPLY_MARKER = re.compile(r"^\s*On .{0,200}wrote:\s*$", re.MULTILINE)
+
+
+def strip_quoted(body: str) -> str:
+    """Drop quoted history, so a five-message thread is not re-read five times."""
+    cut = _REPLY_MARKER.search(body)
+    if cut:
+        body = body[: cut.start()]
+    return _QUOTED.sub("", body).strip()
+
+
+def decode_qp(text: str) -> str:
+    import quopri
+
+    return quopri.decodestring(text.encode()).decode("utf-8", errors="replace")
+
+
+def decode_header(value: str) -> str:
+    from email.header import decode_header as _dh
+
+    out = []
+    for raw, enc in _dh(value or ""):
+        out.append(raw.decode(enc or "utf-8", errors="replace") if isinstance(raw, bytes) else raw)
+    return "".join(out)
+
+
+def split_address(value: str) -> tuple[str, str, str]:
+    """`Display Name <user@host>` -> (display name, address, domain), all lowercased but the name.
+
+    A display name and an address are two different claims about who sent a message. Mail
+    clients show the first and check nothing; anything that decides on the sender -- an
+    allowlist, a look-alike rule -- has to decide on the address.
+    """
+    from email.utils import parseaddr
+
+    name, addr = parseaddr(value or "")
+    addr = addr.lower()
+    return decode_header(name).strip(), addr, addr.rpartition("@")[2]
+
+
+def parse_date(value: str) -> str:
+    """A mailbox date as a UTC ISO string.
+
+    Sorting or comparing local wall-clock strings puts an 18:20 message from Osaka after a
+    09:14 message from Ohio, which is backwards, and it is a thread's newest message that
+    decides what its record says. ISO 8601 with an offset is the fixture format; the RFC 2822
+    form that mail clients actually write, and a trailing Z, are read too. A date with no
+    offset at all is taken as UTC: one odd header should not stop the whole mailbox.
+    """
+    raw = (value or "").strip()
+    try:
+        dt = datetime.fromisoformat(raw[:-1] + "+00:00" if raw.endswith("Z") else raw)
+    except ValueError:
+        from email.utils import parsedate_to_datetime
+
+        dt = parsedate_to_datetime(raw)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return utc_iso(dt)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Client
 # ─────────────────────────────────────────────────────────────────────────────
 
 
 @dataclass
 class Clients:
-    """The FluxClient an agent runs on, plus the SDK version it was checked against."""
+    """The FluxClient an agent runs on, plus what was decided when it was built.
+
+    `telemetry` and `dashboard_base` are fixed here, once, from the same environment read that
+    chose the client's settings. Anything printed later reads them back from this object rather
+    than from the environment, so what is printed cannot disagree with what the client did.
+    """
 
     anthropic: Any
     sdk_version: str = ""
+    telemetry: bool = False
+    dashboard_base: str = ""
     _closed: bool = False
 
     async def close(self) -> None:
-        """Flush the execution graph and close. Safe to call twice: the agents close inside a
-        `finally`, and a step may have closed earlier to report."""
+        """Flush the execution graph and close. Safe to call twice."""
         if self._closed:
             return
         self._closed = True
@@ -255,6 +359,7 @@ async def make_clients() -> Clients:
     keys = require_keys("ANTHROPIC_API_KEY")
     flux_key = os.environ.get("FLUXCOMPUTE_KEY") or None
     capture = flux_key is not None and os.environ.get("FLUX_CONTENT_CAPTURE") == "1"
+    events_url = os.environ.get("FLUX_GRAPH_EVENTS_URL", DEFAULT_EVENTS_URL)
 
     from fluxcompute import FluxClient
 
@@ -266,13 +371,22 @@ async def make_clients() -> Clients:
         provider="anthropic",
     )
     if flux_key:
-        await client.verify()
+        try:
+            await client.verify()
+        except Exception:
+            await client.close()  # the failure is the message; do not also leak the client
+            raise
     if capture:
         print(
             "  content capture is ON: model inputs and outputs for this run leave this machine."
             " See the SDK documentation on telemetry and privacy for what is kept."
         )
-    return Clients(anthropic=client, sdk_version=version)
+    return Clients(
+        anthropic=client,
+        sdk_version=version,
+        telemetry=flux_key is not None,
+        dashboard_base=events_url.rsplit("/v1/", 1)[0],
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -296,7 +410,12 @@ def parse_json(text: str) -> Any:
 
 @dataclass
 class LLMResult:
-    """A parsed reply plus the routing metadata that makes a run measurable."""
+    """A parsed reply plus the routing metadata that makes a run measurable.
+
+    When a reply needed the repair retry, the routing fields describe the first call (the one
+    the router decided) and the cost and token fields are the sum of both calls: two calls were
+    made and paid for, and the scorecard says so.
+    """
 
     data: Any
     model_selected: str
@@ -322,7 +441,6 @@ async def call(
     model: str = "auto",
     max_tokens: int = 1024,
     temperature: float = 0.0,
-    provider: str = "anthropic",
 ) -> LLMResult:
     """One JSON-returning LLM call, with one repair retry, inside the caller's step.
 
@@ -334,53 +452,62 @@ async def call(
     Keep a rubric under ~500 words. The classifier scores the last user message, and a system
     message adds at most +0.10 to that score (+0.05 over 200 words, +0.10 over 500) -- enough
     to push a short classification out of the cheap tier.
+
+    The repair retry goes to the model the first call selected, not back through "auto": the
+    classifier scores the last user message, and the eleven-word repair prompt would route to
+    the cheapest tier whatever the document had needed. A reply with no text at all is not
+    repaired -- the API refuses an empty assistant turn -- and fails as parse_failed at once.
     """
     messages = [{"role": "system", "content": rubric}, {"role": "user", "content": user}]
     started = time.monotonic()
-    repaired = False
+    responses: list[Any] = []
 
-    async def _once(msgs: list[dict[str, Any]]) -> Any:
+    async def _once(msgs: list[dict[str, Any]], use_model: str) -> Any:
         try:
-            return await client.messages.create(
-                model=model, messages=msgs, max_tokens=max_tokens, temperature=temperature
+            resp = await client.messages.create(
+                model=use_model, messages=msgs, max_tokens=max_tokens, temperature=temperature
             )
         except Exception as exc:  # provider failures are item failures, never run failures
             raise ItemError("provider_error") from exc
+        responses.append(resp)
+        return resp
 
-    resp = await _once(messages)
+    resp = await _once(messages, model)
     try:
         data = parse_json(resp.text)
     except ItemError:
-        repaired = True
+        if not (resp.text or "").strip():
+            raise
+        repair_model = model if model != "auto" else resp.fluxcompute.model_selected
         resp = await _once(
             messages
             + [
-                {"role": "assistant", "content": resp.text or ""},
+                {"role": "assistant", "content": resp.text},
                 {
                     "role": "user",
                     "content": "That was not valid JSON. Reply with only the JSON object.",
                 },
-            ]
+            ],
+            repair_model,
         )
         data = parse_json(resp.text)
 
-    meta = resp.fluxcompute
-    usage = resp.usage
+    first, last = responses[0].fluxcompute, responses[-1].fluxcompute
     return LLMResult(
         data=data,
-        model_selected=meta.model_selected,
-        model_served=getattr(resp.raw, "model", meta.model_selected),
-        difficulty_score=meta.difficulty_score,
-        difficulty_label=meta.difficulty_label,
-        cost_usd=float(meta.cost_usd),
-        baseline_cost_usd=float(meta.baseline_cost_usd),
-        savings_usd=float(meta.savings_usd),
-        input_tokens=int(usage.get("input_tokens", 0)),
-        output_tokens=int(usage.get("output_tokens", 0)),
+        model_selected=first.model_selected,
+        model_served=getattr(responses[-1].raw, "model", last.model_selected),
+        difficulty_score=first.difficulty_score,
+        difficulty_label=first.difficulty_label,
+        cost_usd=sum(float(r.fluxcompute.cost_usd) for r in responses),
+        baseline_cost_usd=sum(float(r.fluxcompute.baseline_cost_usd) for r in responses),
+        savings_usd=sum(float(r.fluxcompute.savings_usd) for r in responses),
+        input_tokens=sum(int(r.usage.get("input_tokens", 0)) for r in responses),
+        output_tokens=sum(int(r.usage.get("output_tokens", 0)) for r in responses),
         latency_ms=int((time.monotonic() - started) * 1000),
-        overhead_ms=float(meta.overhead_ms),
-        repaired=repaired,
-        provider=provider,
+        overhead_ms=sum(float(r.fluxcompute.overhead_ms) for r in responses),
+        repaired=len(responses) > 1,
+        provider=getattr(responses[-1], "provider", "anthropic"),
     )
 
 
@@ -402,6 +529,27 @@ def connect(path: Path, schema: str) -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys=ON")
     conn.executescript(schema)
     return conn
+
+
+def run_id(prefix: str, attempt: int = 1) -> str:
+    """A task id that names one run: the agent, the day, and the attempt."""
+    return f"{prefix}-{utc_now():%Y%m%d}-{attempt:02d}"
+
+
+def next_attempt(db: sqlite3.Connection, prefix: str) -> int:
+    """The first unused attempt number today, read from the agent's own run table.
+
+    A task id names one run's graph. Back-to-back runs on one day must not share it: the
+    second run's row would replace the first's, anything keyed on the id (a changelog's
+    conflicts, a dashboard task) would merge the two, and a resumed run would not know which
+    one it was resuming.
+    """
+    today = f"{prefix}-{utc_now():%Y%m%d}-"
+    row = db.execute(
+        "SELECT MAX(task_id) AS latest FROM run WHERE task_id LIKE ?", (today + "%",)
+    ).fetchone()
+    latest = row["latest"] if row else None
+    return int(latest.rsplit("-", 1)[1]) + 1 if latest else 1
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -454,12 +602,18 @@ class Scorecard:
 
     def render(self) -> str:
         lat = [c.latency_ms for c in self.calls]
+        repaired = sum(1 for c in self.calls if c.repaired)
         lines = [
             "",
             "─" * 62,
             f"  {self.title}",
             "─" * 62,
-            f"  LLM calls          {len(self.calls)}",
+            f"  LLM calls          {len(self.calls) + repaired}"
+            + (
+                f"  ({repaired} repair {'retry' if repaired == 1 else 'retries'})"
+                if repaired
+                else ""
+            ),
             f"  Tiers              {self.tiers() or '-'}",
             f"  Cost               ${self.cost:.4f}",
             f"  Savings            ${self.savings:.4f}  (vs always-{self.baseline})",
@@ -481,15 +635,15 @@ class Scorecard:
         print(self.render())
 
 
-def graph_line(client: Any, task_id: str) -> str:
-    """One line on the execution graph this process recorded, plus its dashboard link when a
-    FluxCompute key is set. The same environment check decides both, so they cannot disagree."""
-    graph = client.get_task_graph(task_id)
+def graph_line(clients: Clients, task_id: str) -> str:
+    """One line on the execution graph this process recorded, plus its dashboard link when the
+    run was built with a FluxCompute key. Both come from the Clients object, so the link is
+    printed exactly when the graph was sent."""
+    graph = clients.anthropic.get_task_graph(task_id)
     nodes = len(graph.in_order()) if graph else 0
     line = f"  graph: {nodes} nodes recorded in-process"
-    if os.environ.get("FLUXCOMPUTE_KEY"):
-        base = os.environ.get("FLUX_GRAPH_EVENTS_URL", DEFAULT_EVENTS_URL).rsplit("/v1/", 1)[0]
-        line += f"\n  {base}/ui/#task={task_id}"
+    if clients.telemetry:
+        line += f"\n  {clients.dashboard_base}/ui/#task={task_id}"
     return line
 
 
@@ -499,11 +653,6 @@ def display(path: Path) -> str:
         return str(path.resolve().relative_to(HERE))
     except ValueError:
         return path.name
-
-
-def run_id(prefix: str, attempt: int = 1) -> str:
-    """A deterministic task id, so re-running today attaches to the same graph."""
-    return f"{prefix}-{utc_now():%Y%m%d}-{attempt:02d}"
 
 
 def read_json(path: Path) -> Any:
