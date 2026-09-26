@@ -7,6 +7,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from fluxcompute.router.dispatcher import extract_gemini_content, extract_gemini_text, extract_gemini_usage
+
 
 # ---------------------------------------------------------------------------
 # Classification
@@ -75,9 +77,9 @@ class FluxResponse:
     Wraps the raw provider response and adds FluxCompute metadata.
 
     Attributes:
-        raw         – The original response object from Anthropic/OpenAI SDK.
+        raw         – The original response object from Anthropic/OpenAI/Gemini SDK.
         fluxcompute – FluxCompute routing + cost metadata.
-        provider    – "anthropic" or "openai".
+        provider    – "anthropic", "openai", or "google".
     """
 
     raw: Any
@@ -89,6 +91,8 @@ class FluxResponse:
     def content(self):
         if self.provider == "anthropic":
             return self.raw.content
+        if self.provider == "google":
+            return extract_gemini_content(self.raw)
         # OpenAI
         return self.raw.choices
 
@@ -99,6 +103,8 @@ class FluxResponse:
                 "input_tokens": self.raw.usage.input_tokens,
                 "output_tokens": self.raw.usage.output_tokens,
             }
+        if self.provider == "google":
+            return extract_gemini_usage(self.raw)
         # OpenAI
         return {
             "input_tokens": self.raw.usage.prompt_tokens,
@@ -117,6 +123,8 @@ class FluxResponse:
                 if hasattr(block, "text"):
                     return block.text
             return ""
+        if self.provider == "google":
+            return extract_gemini_text(self.raw)
         # OpenAI
         return self.raw.choices[0].message.content or ""
 

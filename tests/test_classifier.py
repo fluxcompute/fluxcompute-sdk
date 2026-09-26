@@ -1,6 +1,5 @@
 """Tests for the heuristic classifier."""
 
-import pytest
 from fluxcompute.classifier.heuristic import classify
 
 
@@ -149,8 +148,10 @@ class TestClassifierEdgeCases:
         msgs = [{"role": "user", "content": "What is 2+2?"}]
         anthropic_result = classify(msgs, provider="anthropic")
         openai_result = classify(msgs, provider="openai")
+        google_result = classify(msgs, provider="google")
         assert "claude" in anthropic_result.model
         assert "gpt" in openai_result.model or "o1" in openai_result.model
+        assert "gemini" in google_result.model
 
     def test_reasoning_field_populated(self):
         msgs = [{"role": "user", "content": "Explain quantum computing"}]
@@ -216,3 +217,16 @@ class TestContentBlockMessages:
         block_result = classify([{"role": "user", "content": blocks}])
         plain_result = classify([{"role": "user", "content": joined}])
         assert block_result.label == plain_result.label
+
+    def test_list_shaped_system_prompt_does_not_crash(self):
+        """The system-prompt-length signal read `.content.split()` directly,
+        never routed through `_message_text` -- unlike every path above, a
+        list-shaped system prompt (content blocks, same as a list-shaped user
+        message) crashed this with AttributeError: 'list' object has no
+        attribute 'split'."""
+        messages = [
+            {"role": "system", "content": [{"type": "text", "text": "You are a helpful assistant."}]},
+            {"role": "user", "content": "Hello"},
+        ]
+        result = classify(messages)
+        assert result.model

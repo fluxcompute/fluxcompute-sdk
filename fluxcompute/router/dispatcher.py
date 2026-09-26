@@ -9,6 +9,14 @@ Two dispatch modes per provider:
 Anthropic: supports both plain {role, content} messages and the
 content-block format required for prompt caching. Returns cache token
 counts from usage so cost.py can price them correctly.
+
+Gemini: generateContent is not OpenAI-compatible — no "assistant" role
+(it's "model"), no "system" message in the turn list (system text is a
+separate `system_instruction` config field), and usage field names differ
+(prompt_token_count / candidates_token_count / cached_content_token_count).
+dispatch_gemini normalises all of that to the same shape the other two
+dispatch functions return. There is no stream_gemini yet — Gemini is only
+wired up for the non-streaming path (see FluxClient._stream_execute).
 """
 
 from __future__ import annotations
@@ -106,6 +114,62 @@ async def dispatch_openai(
         "output_tokens": response.usage.completion_tokens,
         "cache_write_tokens": 0,
         "cache_read_tokens": 0,
+    }
+
+
+async def dispatch_gemini(
+    client: Any,                    # google.genai.Client
+    model: str,
+    messages: List[Dict[str, Any]],
+    system: Any = None,             # str — Gemini has no content-block system format
+    max_tokens: int = 4096,
+    temperature: float = 1.0,
+    **kwargs,
+) -> Dict[str, Any]:
+    """
+    Call Gemini's generateContent API (via the google-genai SDK's async client)
+    and return response + timing + cache stats.
+
+    No import of google.genai here — `client` arrives already constructed
+    (fluxcompute/client.py), and both `contents` and `config` accept plain
+    dicts, so this stays duck-typed like dispatch_anthropic/dispatch_openai.
+    """
+    start = time.monotonic()
+
+    if system is None:
+        system_msgs = [m for m in messages if m.get("role") == "system"]
+        if system_msgs:
+            system = system_msgs[0]["content"]
+        messages = [m for m in messages if m.get("role") != "system"]
+
+    contents = [_to_gemini_content(m) for m in messages]
+
+    config: Dict[str, Any] = {
+        "max_output_tokens": max_tokens,
+        "temperature": temperature,
+        **kwargs,
+    }
+    if system:
+        config["system_instruction"] = system
+
+    response = await client.aio.models.generate_content(
+        model=model,
+        contents=contents,
+        config=config,
+    )
+
+    elapsed_ms = (time.monotonic() - start) * 1000
+    usage = response.usage_metadata
+
+    return {
+        "response": response,
+        "response_ms": round(elapsed_ms, 1),
+        "input_tokens": getattr(usage, "prompt_token_count", 0) or 0,
+        "output_tokens": getattr(usage, "candidates_token_count", 0) or 0,
+        # Gemini's implicit context caching is automatic (no explicit "write"
+        # call/cost the way Anthropic's is) — only a read count comes back.
+        "cache_write_tokens": 0,
+        "cache_read_tokens": getattr(usage, "cached_content_token_count", 0) or 0,
     }
 
 
@@ -329,3 +393,93 @@ def _flatten_to_openai(msg: Dict[str, Any]) -> Dict[str, Any]:
         )
         return {"role": msg["role"], "content": text}
     return msg
+
+
+def _to_gemini_content(msg: Dict[str, Any]) -> Dict[str, Any]:
+    """Convert an Anthropic/OpenAI-style message to Gemini's {role, parts} shape.
+
+    Gemini's Content type only has two roles, "user" and "model" — there is
+    no third "tool" role the way OpenAI has, so any non-"assistant" role
+    (including a literal role="tool" message, or a role="user" message
+    carrying Anthropic-style tool_result blocks) maps to "user", matching
+    Gemini's own function-calling contract where a function's result is
+    sent back as a functionResponse part on a "user" turn.
+
+    tool_use/tool_result blocks are not dropped: tool_use blocks (an
+    assistant's function call) become functionCall parts, and tool_result
+    blocks (or a plain role="tool" message) become functionResponse parts,
+    so tool-call turns survive a mid-session handoff to Gemini instead of
+    silently going empty."""
+    role = "model" if msg.get("role") == "assistant" else "user"
+    content = msg.get("content")
+
+    if isinstance(content, list):
+        parts: List[Dict[str, Any]] = []
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            block_type = block.get("type")
+            if block_type == "tool_use":
+                parts.append({
+                    "functionCall": {
+                        "name": block.get("name", ""),
+                        "args": block.get("input") or {},
+                    }
+                })
+            elif block_type == "tool_result":
+                parts.append({
+                    "functionResponse": {
+                        "name": block.get("tool_use_id") or block.get("name", ""),
+                        "response": {"result": block.get("content", "")},
+                    }
+                })
+        text = " ".join(
+            block.get("text", "")
+            for block in content
+            if isinstance(block, dict) and block.get("type") == "text"
+        )
+        if text:
+            parts.append({"text": text})
+        if not parts:
+            parts = [{"text": ""}]
+        return {"role": role, "parts": parts}
+
+    if msg.get("role") == "tool":
+        return {
+            "role": role,
+            "parts": [{
+                "functionResponse": {
+                    "name": msg.get("name") or msg.get("tool_call_id") or "tool",
+                    "response": {"result": content or ""},
+                }
+            }],
+        }
+
+    return {"role": role, "parts": [{"text": content or ""}]}
+
+
+# ---------------------------------------------------------------------------
+# Response extraction — small provider-specific readers so client.py/models.py
+# never need their own anthropic/openai/google branch to pull the assistant's
+# text/content/usage back out of a raw SDK response object.
+# ---------------------------------------------------------------------------
+
+def extract_gemini_text(response: Any) -> str:
+    for candidate in getattr(response, "candidates", None) or []:
+        for part in getattr(candidate.content, "parts", None) or []:
+            text = getattr(part, "text", None)
+            if text:
+                return text
+    return ""
+
+
+def extract_gemini_content(response: Any) -> Any:
+    return response.candidates
+
+
+def extract_gemini_usage(response: Any) -> Dict[str, int]:
+    usage = getattr(response, "usage_metadata", None)
+    return {
+        "input_tokens": getattr(usage, "prompt_token_count", 0) or 0,
+        "output_tokens": getattr(usage, "candidates_token_count", 0) or 0,
+    }
