@@ -2,7 +2,7 @@
 
 import pytest
 
-from fluxcompute.classifier.heuristic import ANTHROPIC_MODELS, OPENAI_MODELS
+from fluxcompute.classifier.heuristic import ANTHROPIC_MODELS, GEMINI_MODELS, OPENAI_MODELS
 from fluxcompute.cost import MODEL_PRICING, calculate_cost, calculate_savings, get_baseline_model
 
 
@@ -68,6 +68,13 @@ class TestModelPricingCompleteness:
                 "Add it to fluxcompute/cost.py."
             )
 
+    def test_all_classifier_gemini_models_have_pricing(self):
+        for tier, model_id in GEMINI_MODELS.items():
+            assert model_id in MODEL_PRICING, (
+                f"GEMINI_MODELS['{tier}'] = '{model_id}' is not in MODEL_PRICING. "
+                "Add it to fluxcompute/cost.py."
+            )
+
 
 class TestGetBaselineModel:
     def test_anthropic_baseline(self):
@@ -76,11 +83,18 @@ class TestGetBaselineModel:
     def test_openai_baseline(self):
         assert get_baseline_model("openai") == OPENAI_MODELS["hard"]
 
+    def test_google_baseline(self):
+        assert get_baseline_model("google") == GEMINI_MODELS["hard"]
+
     def test_unknown_provider_falls_back_to_a_priced_model(self):
         assert get_baseline_model("unknown") in MODEL_PRICING
 
 
-_PROVIDERS = [("anthropic", ANTHROPIC_MODELS), ("openai", OPENAI_MODELS)]
+_PROVIDERS = [
+    ("anthropic", ANTHROPIC_MODELS),
+    ("openai", OPENAI_MODELS),
+    ("google", GEMINI_MODELS),
+]
 
 
 class TestBaselineInvariant:

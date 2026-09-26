@@ -1,7 +1,7 @@
 """
 Cost calculator for LLM inference.
 
-Pricing is per 1M tokens (input / output) as of May 2026.
+Pricing is per 1M tokens (input / output) as of September 2026.
 Source: provider pricing pages.
 """
 
@@ -19,10 +19,16 @@ MODEL_PRICING: Dict[str, Tuple[float, float]] = {
     "claude-sonnet-4-20250514": (3.00, 15.00),
     "claude-3-opus-20240229": (15.00, 75.00),
     "claude-opus-4-20250918": (15.00, 75.00),
-    # Anthropic — current generation (what the classifier routes to)
+    # Anthropic — claude-sonnet-4-6 / claude-opus-4-8 are superseded by the
+    # Claude 5 family below and no longer routed to; kept for pricing
+    # continuity on in-flight/legacy sessions.
     "claude-haiku-4-5-20251001": (1.00, 5.00),
     "claude-sonnet-4-6": (3.00, 15.00),
     "claude-opus-4-8": (5.00, 25.00),
+    # Anthropic — Claude 5 family (current generation — what the classifier
+    # routes to for medium/hard; easy stays on claude-haiku-4-5-20251001 above)
+    "claude-sonnet-5": (2.00, 10.00),
+    "claude-opus-5-5": (4.00, 20.00),
     # OpenAI
     "gpt-4o": (2.50, 10.00),
     "gpt-4o-mini": (0.15, 0.60),
@@ -32,9 +38,31 @@ MODEL_PRICING: Dict[str, Tuple[float, float]] = {
     "o1": (15.00, 60.00),
     "o1-mini": (3.00, 12.00),
     "o3-mini": (1.10, 4.40),
+    # OpenAI — GPT-6 Astra/Sol/Luna family (current generation — what the
+    # classifier routes to; replaced the o1/gpt-4o/gpt-4o-mini naming)
+    "gpt-6-astra": (10.00, 50.00),
+    "gpt-6-sol": (2.00, 10.00),
+    "gpt-6-luna": (0.10, 0.50),
     # Qwen via HuggingFace (serverless = free; fill in dedicated-endpoint price per 1M tokens)
     "Qwen/Qwen2.5-Coder-7B-Instruct": (0.0, 0.0),
     "Qwen/Qwen2.5-Coder-32B-Instruct": (0.0, 0.0),
+    # Google — Gemini 3 family (new provider). Confirmed against
+    # ai.google.dev/gemini-api/docs/pricing on 2026-09-24. Two caveats worth
+    # knowing about, not modeled here because MODEL_PRICING has no precedent
+    # for either (flat (input, output) tuple only):
+    #   1. gemini-3.1-pro-preview bills 2x input / 1.5x output above a 200k-
+    #      token prompt ($4.00/$18.00 vs the $2.00/$12.00 used below) — the
+    #      hard tier's likeliest candidate for a long prompt, so cost can be
+    #      undercounted there.
+    #   2. gemini-3.6-flash's and gemini-3.1-flash-lite's rates below are
+    #      promotional through 2026-12-31; both double 2027-01-01.
+    # Gemini's cached-content rate happens to be exactly 0.10x input price
+    # for all three models below, matching calculate_cost()'s existing
+    # cache_read_tokens multiplier (written for Anthropic) — no formula
+    # change needed for cache pricing to come out correct.
+    "gemini-3.1-pro-preview": (2.00, 12.00),
+    "gemini-3.6-flash": (0.75, 3.75),
+    "gemini-3.1-flash-lite": (0.25, 1.50),
 }
 
 # Default baseline models — must be the most expensive model the router can
@@ -43,8 +71,9 @@ MODEL_PRICING: Dict[str, Tuple[float, float]] = {
 # understates baseline_cost_usd. Pinned against the tier maps by
 # test_cost.py::TestBaselineInvariant.
 DEFAULT_BASELINES = {
-    "anthropic": "claude-opus-4-8",
-    "openai": "o1",
+    "anthropic": "claude-opus-5-5",
+    "openai": "gpt-6-astra",
+    "google": "gemini-3.1-pro-preview",
 }
 
 
@@ -106,4 +135,4 @@ def calculate_savings(
 
 def get_baseline_model(provider: str) -> str:
     """Get the default baseline (most expensive) model for a provider."""
-    return DEFAULT_BASELINES.get(provider, "claude-opus-4-8")
+    return DEFAULT_BASELINES.get(provider, "claude-opus-5-5")

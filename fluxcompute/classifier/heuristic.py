@@ -123,15 +123,16 @@ CREATIVE_KEYWORDS: Set[str] = {
 # Anthropic model tiers (current generation — must exist in MODEL_PRICING)
 ANTHROPIC_MODELS = {
     "easy": "claude-haiku-4-5-20251001",
-    "medium": "claude-sonnet-4-6",
-    "hard": "claude-opus-4-8",
+    "medium": "claude-sonnet-5",
+    "hard": "claude-opus-5-5",
 }
 
-# OpenAI model tiers
+# OpenAI model tiers (GPT-6 Astra/Sol/Luna family — replaced the o1/gpt-4o/
+# gpt-4o-mini naming)
 OPENAI_MODELS = {
-    "easy": "gpt-4o-mini",
-    "medium": "gpt-4o",
-    "hard": "o1",
+    "easy": "gpt-6-luna",
+    "medium": "gpt-6-sol",
+    "hard": "gpt-6-astra",
 }
 
 # Qwen via HuggingFace (must exist in MODEL_PRICING)
@@ -140,6 +141,27 @@ QWEN_MODELS = {
     "medium": "Qwen/Qwen2.5-Coder-32B-Instruct",
     "hard": "Qwen/Qwen2.5-Coder-32B-Instruct",
 }
+
+# Google model tiers (Gemini 3 family). "hard" points at a model still
+# labeled "preview" by Google (ai.google.dev/gemini-api/docs/pricing) —
+# risk-accepted rather than given a fallback: every other provider's "hard"
+# tier here is also a single fixed model ID with no automatic fallback.
+GEMINI_MODELS = {
+    "easy": "gemini-3.1-flash-lite",
+    "medium": "gemini-3.6-flash",
+    "hard": "gemini-3.1-pro-preview",
+}
+
+
+def _models_for(provider: str) -> Dict[str, str]:
+    """Difficulty-tier model map for a provider name."""
+    if provider == "anthropic":
+        return ANTHROPIC_MODELS
+    if provider == "huggingface":
+        return QWEN_MODELS
+    if provider == "google":
+        return GEMINI_MODELS
+    return OPENAI_MODELS
 
 
 # ---------------------------------------------------------------------------
@@ -195,7 +217,7 @@ def classify(
     if not last_msg:
         # No user message found — default to medium
         elapsed = (time.monotonic() - start) * 1000
-        models = ANTHROPIC_MODELS if provider == "anthropic" else (QWEN_MODELS if provider == "huggingface" else OPENAI_MODELS)
+        models = _models_for(provider)
         return ClassificationResult(
             score=0.5,
             label="medium",
@@ -293,7 +315,7 @@ def classify(
     # -----------------------------------------------------------------------
     system_msgs = [m for m in messages if m.get("role") == "system"]
     if system_msgs:
-        sys_len = len(system_msgs[0].get("content", "").split())
+        sys_len = len(_message_text(system_msgs[0].get("content")).split())
         if sys_len > 500:
             score += 0.10
             reasons.append(f"complex system prompt ({sys_len} words)")
@@ -321,7 +343,7 @@ def classify(
     else:
         label = "hard"
 
-    models = ANTHROPIC_MODELS if provider == "anthropic" else (QWEN_MODELS if provider == "huggingface" else OPENAI_MODELS)
+    models = _models_for(provider)
     model = models[label]
 
     elapsed = (time.monotonic() - start) * 1000

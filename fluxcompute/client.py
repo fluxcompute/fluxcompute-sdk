@@ -36,7 +36,9 @@ from fluxcompute.router.dispatcher import (
     _openai_stream_text,
     _openai_token_kwargs,
     dispatch_anthropic,
+    dispatch_gemini,
     dispatch_openai,
+    extract_gemini_text,
 )
 from fluxcompute.state.cache_manager import CacheManager
 from fluxcompute.state.context_builder import ContextBuilder
@@ -165,6 +167,7 @@ class FluxClient:
         *,
         anthropic_key: Optional[str] = None,
         openai_key: Optional[str] = None,
+        google_key: Optional[str] = None,
         fluxcompute_key: Optional[str] = None,
         baseline_model: Optional[str] = None,
         telemetry: bool = True,
@@ -177,6 +180,7 @@ class FluxClient:
         Args:
             anthropic_key: Anthropic API key. Required for Anthropic models.
             openai_key: OpenAI API key. Required for OpenAI models.
+            google_key: Google AI (Gemini) API key. Required for Gemini models.
             fluxcompute_key: FluxCompute key for telemetry + dashboard (optional).
                 Falls back to the FLUXCOMPUTE_KEY environment variable.
             baseline_model: The model to compare savings against (defaults to most expensive).
@@ -190,31 +194,38 @@ class FluxClient:
                 nodes — so the dashboard can show what a step actually produced.
                 Off by default: this sends model input/output off your machine.
                 Requires telemetry and fluxcompute_key.
-            provider: Force "anthropic" or "openai". Auto-detected if only one key given.
+            provider: Force "anthropic", "openai", or "google". Auto-detected if
+                only one key given; with more than one, anthropic wins over
+                openai wins over google (same precedence as the two-provider
+                behavior this generalizes).
         """
         # Fall back to environment variables (same convention as Anthropic/OpenAI SDKs)
         anthropic_key = anthropic_key or os.environ.get("ANTHROPIC_API_KEY")
         openai_key = openai_key or os.environ.get("OPENAI_API_KEY")
+        google_key = google_key or os.environ.get("GOOGLE_API_KEY")
         fluxcompute_key = fluxcompute_key or os.environ.get("FLUXCOMPUTE_KEY")
 
         # Determine provider
         if provider:
             self._provider = provider
-        elif anthropic_key and not openai_key:
+        elif anthropic_key and not openai_key and not google_key:
             self._provider = "anthropic"
-        elif openai_key and not anthropic_key:
+        elif openai_key and not anthropic_key and not google_key:
             self._provider = "openai"
-        elif anthropic_key and openai_key:
-            self._provider = "anthropic"  # default when both provided
+        elif google_key and not anthropic_key and not openai_key:
+            self._provider = "google"
+        elif anthropic_key or openai_key or google_key:
+            self._provider = "anthropic" if anthropic_key else ("openai" if openai_key else "google")
         else:
             raise ValueError(
-                "No API key found. Pass anthropic_key/openai_key or set "
-                "ANTHROPIC_API_KEY / OPENAI_API_KEY in your environment."
+                "No API key found. Pass anthropic_key/openai_key/google_key or set "
+                "ANTHROPIC_API_KEY / OPENAI_API_KEY / GOOGLE_API_KEY in your environment."
             )
 
         # Initialise provider clients
         self._anthropic_client = None
         self._openai_client = None
+        self._google_client = None
 
         if anthropic_key:
             self._anthropic_client = anthropic.AsyncAnthropic(api_key=anthropic_key)
@@ -222,6 +233,10 @@ class FluxClient:
         if openai_key:
             import openai
             self._openai_client = openai.AsyncOpenAI(api_key=openai_key)
+
+        if google_key:
+            from google import genai
+            self._google_client = genai.Client(api_key=google_key)
 
         # Baseline model for cost comparison
         self._baseline_model = baseline_model or get_baseline_model(self._provider)
@@ -459,6 +474,17 @@ class FluxClient:
                     temperature=temperature,
                     **kwargs,
                 )
+            elif self._provider == "google":
+                if self._google_client is None:
+                    raise ValueError("Google client not initialised. Provide google_key.")
+                result = await dispatch_gemini(
+                    client=self._google_client,
+                    model=selected_model,
+                    messages=compressed,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    **kwargs,
+                )
             else:
                 if self._openai_client is None:
                     raise ValueError("OpenAI client not initialised. Provide openai_key.")
@@ -532,6 +558,8 @@ class FluxClient:
                 if hasattr(block, "text"):
                     assistant_content = block.text
                     break
+        elif self._provider == "google":
+            assistant_content = extract_gemini_text(result["response"])
         else:
             assistant_content = result["response"].choices[0].message.content or ""
 
@@ -662,6 +690,12 @@ class FluxClient:
             cache_write = getattr(usage, "cache_creation_input_tokens", 0) or 0
             cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
 
+        elif self._provider == "google":
+            raise NotImplementedError(
+                "Streaming is not yet supported for the Google provider — "
+                "use client.messages.create() instead."
+            )
+
         else:
             if self._openai_client is None:
                 raise ValueError("OpenAI client not initialised. Provide openai_key.")
@@ -783,6 +817,8 @@ class FluxClient:
             await self._anthropic_client.close()
         if self._openai_client:
             await self._openai_client.close()
+        if self._google_client:
+            await self._google_client.aio.aclose()
 
     async def __aenter__(self):
         return self

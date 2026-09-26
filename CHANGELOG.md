@@ -10,6 +10,11 @@ Before 1.0, a minor version bump may contain breaking changes.
 
 ### Added
 
+- **Google Gemini support** — pass `google_key` (or set `GOOGLE_API_KEY`) to
+  route to Gemini 3 alongside Anthropic and OpenAI. `client.messages.create()`
+  works end to end (classify → dispatch → cost/savings → session history);
+  `client.messages.stream()` isn't wired up for Gemini yet and raises
+  `NotImplementedError` with a clear message if you try.
 - **Two worked agents under `examples/agents/`**: a company brain that keeps a
   document in sync with its sources, and a CRM inbox that turns mail into one
   row per conversation. Complete programs with fixtures and a `$0` test
@@ -17,8 +22,29 @@ Before 1.0, a minor version bump may contain breaking changes.
   and adds the dashboard link. PyYAML comes in via a new `examples` extra.
   `ruff` and the docs checks now cover `examples/`.
 
+### Changed
+
+- **Model tiers updated to the current generation.** Anthropic: medium/hard
+  now route to `claude-sonnet-5`/`claude-opus-5-5` (was `claude-sonnet-4-6`/
+  `claude-opus-4-8`). OpenAI: easy/medium/hard now route to
+  `gpt-6-luna`/`gpt-6-sol`/`gpt-6-astra` (was `gpt-4o-mini`/`gpt-4o`/`o1`).
+  Pricing for the previous-generation model IDs is kept in
+  `fluxcompute/cost.py` for cost continuity on in-flight sessions and anyone
+  pinning a model explicitly — only the classifier's "auto" routing changed.
+- Default baseline models (`get_baseline_model`) updated to match: `anthropic`
+  → `claude-opus-5-5`, `openai` → `gpt-6-astra`, plus a new `google` →
+  `gemini-3.1-pro-preview` entry.
+
 ### Fixed
 
+- **The system-prompt-length classifier signal crashed on list-shaped
+  content.** Every other content-block path in `classify()` already went
+  through `_message_text()` (added for the same reason on user messages,
+  see `TestContentBlockMessages`), but the system-prompt signal still called
+  `.split()` directly on `system_msgs[0]["content"]`, so a system prompt
+  passed as content blocks (rather than a plain string) raised
+  `AttributeError: 'list' object has no attribute 'split'`. Now routed
+  through `_message_text()` like every other signal.
 - **`GraphEmitter.flush()` and `TelemetryReporter.flush()` treated a
   non-200 HTTP response the same as a delivered batch.** Both only
   logged a warning on a bad status code, then still advanced past

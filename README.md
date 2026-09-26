@@ -46,11 +46,11 @@ routing and cost data added under `response.fluxcompute`.
 Each request gets a difficulty score from a heuristic classifier (prompt
 structure, reasoning markers, length, task type), which maps to a tier:
 
-| Score | Tier | Anthropic | OpenAI |
-| ------------- | ------ | ----------------- | ------------- |
-| `< 0.18` | easy | `claude-haiku-4-5` | `gpt-4o-mini` |
-| `0.18` – `0.45` | medium | `claude-sonnet-4-6` | `gpt-4o` |
-| `>= 0.45` | hard | `claude-opus-4-8` | `o1` |
+| Score | Tier | Anthropic | OpenAI | Google |
+| ------------- | ------ | ----------------- | ------------- | -------------------- |
+| `< 0.18` | easy | `claude-haiku-4-5` | `gpt-6-luna` | `gemini-3.1-flash-lite` |
+| `0.18` – `0.45` | medium | `claude-sonnet-5` | `gpt-6-sol` | `gemini-3.6-flash` |
+| `>= 0.45` | hard | `claude-opus-5-5` | `gpt-6-astra` | `gemini-3.1-pro-preview` |
 
 Savings come from the queries that get downgraded: against the default
 baseline, an easy-tier call costs **80% less** and a medium-tier call **40%
@@ -150,6 +150,7 @@ Anthropic and OpenAI SDK conventions:
 | ---------------------- | -------------------------------------------- |
 | `ANTHROPIC_API_KEY` | Anthropic provider key |
 | `OPENAI_API_KEY` | OpenAI provider key |
+| `GOOGLE_API_KEY` | Google (Gemini) provider key |
 | `FLUXCOMPUTE_KEY` | FluxCompute key: enables telemetry |
 | `FLUX_TELEMETRY_URL` | Override the telemetry endpoint |
 | `FLUX_GRAPH_EVENTS_URL` | Override the graph-events endpoint |
