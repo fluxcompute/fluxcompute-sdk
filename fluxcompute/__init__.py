@@ -22,7 +22,7 @@ Usage:
     print(response.fluxcompute.savings_usd)     # 0.0035
 """
 
-__version__ = "0.3.1"
+__version__ = "0.3.2"
 
 from fluxcompute.client import FluxClient
 from fluxcompute.graph.types import TaskGraph, TaskNode
