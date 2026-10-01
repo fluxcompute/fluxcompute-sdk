@@ -22,9 +22,10 @@ Usage:
     print(response.fluxcompute.savings_usd)     # 0.0035
 """
 
-__version__ = "0.3.2"
+__version__ = "0.3.3"
 
 from fluxcompute.client import FluxClient
+from fluxcompute.errors import FluxEmptyResponseError
 from fluxcompute.graph.types import TaskGraph, TaskNode
 from fluxcompute.models import FluxResponse, FluxMetadata, FluxStreamChunk, ClassificationResult, CacheStats
 from fluxcompute.plugins import FluxRecoveryNotInstalled
@@ -32,5 +33,5 @@ from fluxcompute.plugins import FluxRecoveryNotInstalled
 __all__ = [
     "FluxClient", "FluxResponse", "FluxMetadata", "FluxStreamChunk",
     "ClassificationResult", "CacheStats", "TaskGraph", "TaskNode",
-    "FluxRecoveryNotInstalled",
+    "FluxRecoveryNotInstalled", "FluxEmptyResponseError",
 ]

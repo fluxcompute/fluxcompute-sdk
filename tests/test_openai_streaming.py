@@ -52,14 +52,12 @@ class TestOpenAIStreamText:
 
 
 class TestStreamingUsesReasoningModelContract:
-    def test_o1_streaming_uses_max_completion_tokens(self):
-        """o1 is the OpenAI *hard* tier. Streaming hardcoded max_tokens, which
-        the API rejects for o-series models."""
-        kwargs = _openai_token_kwargs("o1", 1500, 1.0)
+    def test_streaming_uses_max_completion_tokens(self):
+        """Streaming once hardcoded max_tokens, which reasoning models reject.
+        gpt-6-luna is the OpenAI *easy* tier, so `auto` streams to it."""
+        kwargs = _openai_token_kwargs("gpt-6-luna", 1500, None)
         assert kwargs == {"max_completion_tokens": 1500}
-        assert "max_tokens" not in kwargs
-        assert "temperature" not in kwargs
 
-    def test_chat_models_keep_max_tokens_and_temperature(self):
+    def test_an_explicit_temperature_is_passed_through(self):
         kwargs = _openai_token_kwargs("gpt-4o", 4096, 0.7)
-        assert kwargs == {"max_tokens": 4096, "temperature": 0.7}
+        assert kwargs == {"max_completion_tokens": 4096, "temperature": 0.7}

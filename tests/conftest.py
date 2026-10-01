@@ -55,3 +55,14 @@ def fail_on_requests_to_the_real_backend(monkeypatch):
         return await real_send(self, request, *args, **kwargs)
 
     monkeypatch.setattr(httpx.AsyncClient, "send", guarded_send)
+
+
+@pytest.fixture(autouse=True)
+def forget_rejected_params():
+    """The dispatcher remembers, per process, which params a model rejected.
+    Clear it so one test's learned rejection can't change another's request."""
+    from fluxcompute.router import dispatcher
+
+    dispatcher._REJECTED_PARAMS.clear()
+    yield
+    dispatcher._REJECTED_PARAMS.clear()

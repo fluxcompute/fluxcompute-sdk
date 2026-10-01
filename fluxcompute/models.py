@@ -61,6 +61,8 @@ class FluxMetadata:
     session_id: str
     context_compression: float = 0.0   # fraction of session tokens saved by compression
     cache: CacheStats = None            # prompt-cache stats (None if not Anthropic)
+    truncated: bool = False             # stopped at max_tokens; the answer is cut off
+    reasoning_tokens: int = 0           # hidden reasoning tokens billed inside output tokens
 
     def __post_init__(self):
         if self.cache is None:

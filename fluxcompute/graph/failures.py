@@ -2,7 +2,7 @@
 Rules-based failure classification for task-graph nodes.
 
 Categories:
-context_overflow | budget | tool_error | stall | refusal | unknown
+context_overflow | budget | token_budget | tool_error | stall | refusal | unknown
 
 Order matters: stall (needs sibling history) beats per-node rules, and
 error-text rules beat the node_type fallback.
@@ -28,6 +28,9 @@ REFUSAL_RE = re.compile(
     r"\b(i can't|i cannot|i'm unable|i am unable|i won't|i'm not able)\b",
     re.IGNORECASE,
 )
+#: FluxEmptyResponseError's message: the output-token limit ran out before any
+#: answer text (a reasoning model spent it all on hidden reasoning).
+TOKEN_BUDGET_RE = re.compile(r"token budget exhausted", re.IGNORECASE)
 STALL_WINDOW = 3
 
 
@@ -51,6 +54,8 @@ def classify_failure(node: TaskNode, graph: TaskGraph) -> Optional[str]:
         return "context_overflow"
     if BUDGET_RE.search(error):
         return "budget"
+    if TOKEN_BUDGET_RE.search(error):
+        return "token_budget"
     if node.node_type == "tool_call":
         return "tool_error"
     return "unknown"

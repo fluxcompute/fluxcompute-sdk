@@ -89,7 +89,7 @@ deduplicates by `node_id` and treats later events as upserts.
 | `parent_id` | string \| null | Auto-parented via context variables |
 | `depends_on` | string[] | Links a retry to the node it replaces |
 | `status` | string | `running` \| `succeeded` \| `failed` |
-| `failure_reason` | string \| null | `context_overflow` \| `budget` \| `tool_error` \| `stall` \| `refusal` \| `unknown` |
+| `failure_reason` | string \| null | `context_overflow` \| `budget` \| `token_budget` \| `tool_error` \| `stall` \| `refusal` \| `unknown` |
 | `model` | string \| null | |
 | `input_tokens` | integer | |
 | `output_tokens` | integer | |
