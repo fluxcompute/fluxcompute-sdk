@@ -12,9 +12,11 @@ Usage:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 import uuid
+from contextlib import AsyncExitStack
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -32,18 +34,57 @@ from fluxcompute.graph.resume import build_resume_plan
 from fluxcompute.graph.types import TaskGraph
 from fluxcompute.models import CacheStats, FluxMetadata, FluxResponse, FluxStreamChunk, TelemetryEvent
 from fluxcompute.plugins import FluxRecoveryNotInstalled, get_recovery_plugin
+from fluxcompute.errors import FluxEmptyResponseError
 from fluxcompute.router.dispatcher import (
     _openai_stream_text,
     _openai_token_kwargs,
+    anthropic_create_kwargs,
+    anthropic_finish_state,
     dispatch_anthropic,
     dispatch_gemini,
     dispatch_openai,
     extract_gemini_text,
+    open_stream_with_param_fallback,
+    openai_finish_state,
 )
 from fluxcompute.state.cache_manager import CacheManager
 from fluxcompute.state.context_builder import ContextBuilder
 from fluxcompute.state.session import SessionManager
 from fluxcompute.telemetry.reporter import TelemetryReporter
+
+logger = logging.getLogger("fluxcompute.client")
+
+
+def _check_finish(
+    model: str,
+    max_tokens: int,
+    finish: Dict[str, Any],
+    text: str,
+    output_tokens: int,
+) -> Optional[FluxEmptyResponseError]:
+    """The error for an answer the token limit emptied, or None.
+
+    `finish` is a dispatcher finish state (`*_finish_state`). Hitting the limit
+    with no text and no tool call means nothing usable came back: a reasoning
+    model can spend the whole limit on hidden reasoning. A tool call with no
+    text is a complete turn. Hitting the limit with some text is returned as is
+    and only warned about, since a partial answer can still be useful."""
+    if not finish.get("truncated"):
+        return None
+    reasoning = finish.get("reasoning_tokens", 0)
+    if text or finish.get("has_tool_calls"):
+        logger.warning(
+            "%s stopped at max_tokens=%d; the answer is cut off (%d reasoning tokens).",
+            model, max_tokens, reasoning,
+        )
+        return None
+    return FluxEmptyResponseError(
+        model=model,
+        max_tokens=max_tokens,
+        output_tokens=output_tokens,
+        reasoning_tokens=reasoning,
+        finish_reason=finish.get("finish_reason") or "length",
+    )
 
 
 class _MessagesAPI:
@@ -60,7 +101,7 @@ class _MessagesAPI:
         model: str = "auto",
         messages: List[Dict[str, str]],
         max_tokens: int = 4096,
-        temperature: float = 1.0,
+        temperature: Optional[float] = None,
         session_id: Optional[str] = None,
         **kwargs,
     ) -> FluxResponse:
@@ -71,7 +112,8 @@ class _MessagesAPI:
             model: "auto" to let FluxCompute decide, or a specific model name.
             messages: List of message dicts (OpenAI/Anthropic format).
             max_tokens: Maximum output tokens.
-            temperature: Sampling temperature.
+            temperature: Sampling temperature. Omitted from the request when None
+                (the provider's default); reasoning models accept only the default.
             session_id: Optional session ID for multi-turn state tracking.
             **kwargs: Additional provider-specific arguments.
 
@@ -93,7 +135,7 @@ class _MessagesAPI:
         model: str = "auto",
         messages: List[Dict[str, str]],
         max_tokens: int = 4096,
-        temperature: float = 1.0,
+        temperature: Optional[float] = None,
         session_id: Optional[str] = None,
         **kwargs,
     ) -> "_FluxStreamContext":
@@ -421,7 +463,7 @@ class FluxClient:
         model: str,
         messages: List[Dict[str, str]],
         max_tokens: int = 4096,
-        temperature: float = 1.0,
+        temperature: Optional[float] = None,
         session_id: Optional[str] = None,
         **kwargs,
     ) -> FluxResponse:
@@ -530,6 +572,22 @@ class FluxClient:
         total_ms = (time.monotonic() - total_start) * 1000
         overhead_ms = total_ms - result["response_ms"]
 
+        user_msg = messages[-1] if messages else {"role": "user", "content": ""}
+        assistant_content = ""
+        if self._provider == "anthropic":
+            for block in result["response"].content:
+                if hasattr(block, "text"):
+                    assistant_content = block.text
+                    break
+        elif self._provider == "google":
+            assistant_content = extract_gemini_text(result["response"])
+        else:
+            assistant_content = result["response"].choices[0].message.content or ""
+
+        empty_error = _check_finish(
+            selected_model, max_tokens, result, assistant_content, result["output_tokens"],
+        )
+
         # Build metadata
         metadata = FluxMetadata(
             difficulty_score=classification.score,
@@ -548,21 +606,12 @@ class FluxClient:
                 cache_read_tokens=result.get("cache_read_tokens", 0),
                 cache_hit=result.get("cache_read_tokens", 0) > 0,
             ),
+            truncated=bool(result.get("truncated")),
+            reasoning_tokens=result.get("reasoning_tokens", 0),
         )
 
-        # Update session state
-        user_msg = messages[-1] if messages else {"role": "user", "content": ""}
-        assistant_content = ""
-        if self._provider == "anthropic":
-            for block in result["response"].content:
-                if hasattr(block, "text"):
-                    assistant_content = block.text
-                    break
-        elif self._provider == "google":
-            assistant_content = extract_gemini_text(result["response"])
-        else:
-            assistant_content = result["response"].choices[0].message.content or ""
-
+        # The node keeps the real tokens and cost even when the answer is empty:
+        # those tokens were billed.
         self._graph.record_llm_call(
             model=selected_model,
             input_tokens=result["input_tokens"],
@@ -570,6 +619,7 @@ class FluxClient:
             cost_usd=actual_cost,
             output_preview=assistant_content,
             session_id=session_id,
+            error=str(empty_error) if empty_error else None,
             attributes={
                 "difficulty_score": classification.score,
                 "difficulty_label": classification.label,
@@ -583,21 +633,23 @@ class FluxClient:
                 "type": "attempt",
                 "model": selected_model,
                 "latency_ms": int(result["response_ms"]),
-                "ok": True,
-                "error": None,
+                "ok": empty_error is None,
+                "error": str(empty_error)[:300] if empty_error else None,
             }],
             prompt_full=json.dumps(cache_messages),
             output_full=assistant_content,
         )
 
-        self._sessions.update(
-            session_id=session_id,
-            user_message=user_msg,
-            assistant_message={"role": "assistant", "content": assistant_content},
-            model_used=selected_model,
-            cost_usd=actual_cost,
-            savings_usd=savings,
-        )
+        # An empty answer is not a turn: keeping it would feed "" back as history.
+        if empty_error is None:
+            self._sessions.update(
+                session_id=session_id,
+                user_message=user_msg,
+                assistant_message={"role": "assistant", "content": assistant_content},
+                model_used=selected_model,
+                cost_usd=actual_cost,
+                savings_usd=savings,
+            )
 
         # Send telemetry (async, non-blocking)
         self._telemetry.record(TelemetryEvent(
@@ -616,6 +668,10 @@ class FluxClient:
             overhead_ms=round(overhead_ms, 1),
         ))
 
+        if empty_error is not None:
+            empty_error.raw = result["response"]
+            raise empty_error
+
         return FluxResponse(
             raw=result["response"],
             fluxcompute=metadata,
@@ -628,7 +684,7 @@ class FluxClient:
         model: str,
         messages: List[Dict[str, str]],
         max_tokens: int = 4096,
-        temperature: float = 1.0,
+        temperature: Optional[float] = None,
         session_id: Optional[str] = None,
         **kwargs,
     ):
@@ -668,16 +724,13 @@ class FluxClient:
         if self._provider == "anthropic":
             if self._anthropic_client is None:
                 raise ValueError("Anthropic client not initialised. Provide anthropic_key.")
-            create_kwargs = {
-                "model": selected_model,
-                "messages": cache_messages,
-                "max_tokens": max_tokens,
-                "temperature": temperature,
-                **kwargs,
-            }
-            if cache_system:
-                create_kwargs["system"] = cache_system
-            async with self._anthropic_client.messages.stream(**create_kwargs) as stream:
+            create_kwargs = anthropic_create_kwargs(
+                selected_model, cache_messages, cache_system, max_tokens, temperature, kwargs,
+            )
+            async with AsyncExitStack() as stack:
+                stream = await open_stream_with_param_fallback(
+                    stack, self._anthropic_client.messages.stream, selected_model, create_kwargs,
+                )
                 async for text in stream.text_stream:
                     if ttft_ms is None:
                         ttft_ms = round((time.monotonic() - total_start) * 1000, 1)
@@ -689,6 +742,7 @@ class FluxClient:
             output_tokens = usage.output_tokens
             cache_write = getattr(usage, "cache_creation_input_tokens", 0) or 0
             cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
+            finish = anthropic_finish_state(final)
 
         elif self._provider == "google":
             raise NotImplementedError(
@@ -699,16 +753,16 @@ class FluxClient:
         else:
             if self._openai_client is None:
                 raise ValueError("OpenAI client not initialised. Provide openai_key.")
-            async with self._openai_client.chat.completions.stream(
-                model=selected_model,
-                messages=compressed,
-                # Same reasoning-model adaptation as the non-streaming path:
-                # o-series models take max_completion_tokens and reject a
-                # non-default temperature, so o1 (the OpenAI hard tier) would
-                # otherwise be rejected outright when streaming.
+            create_kwargs = {
+                "model": selected_model,
+                "messages": compressed,
                 **_openai_token_kwargs(selected_model, max_tokens, temperature),
                 **kwargs,
-            ) as stream:
+            }
+            async with AsyncExitStack() as stack:
+                stream = await open_stream_with_param_fallback(
+                    stack, self._openai_client.chat.completions.stream, selected_model, create_kwargs,
+                )
                 # chat.completions.stream() yields typed ChatCompletionStreamEvent
                 # objects, not raw chunks — none of them has `.choices`.
                 async for event in stream:
@@ -724,6 +778,9 @@ class FluxClient:
             if usage:
                 input_tokens = usage.prompt_tokens
                 output_tokens = usage.completion_tokens
+            finish = openai_finish_state(final)
+
+        empty_error = _check_finish(selected_model, max_tokens, finish, assistant_content, output_tokens)
 
         actual_cost, baseline_cost, savings = calculate_savings(
             model_used=selected_model,
@@ -742,6 +799,7 @@ class FluxClient:
             cost_usd=actual_cost,
             output_preview=assistant_content,
             session_id=session_id,
+            error=str(empty_error) if empty_error else None,
             attributes={
                 "difficulty_score": classification.score,
                 "difficulty_label": classification.label,
@@ -755,23 +813,24 @@ class FluxClient:
                 "type": "attempt",
                 "model": selected_model,
                 "latency_ms": int(overhead_ms),
-                "ok": True,
-                "error": None,
+                "ok": empty_error is None,
+                "error": str(empty_error)[:300] if empty_error else None,
             }],
             prompt_full=json.dumps(cache_messages),
             output_full=assistant_content,
         )
 
-        # Update session state
-        user_msg = messages[-1] if messages else {"role": "user", "content": ""}
-        self._sessions.update(
-            session_id=session_id,
-            user_message=user_msg,
-            assistant_message={"role": "assistant", "content": assistant_content},
-            model_used=selected_model,
-            cost_usd=actual_cost,
-            savings_usd=savings,
-        )
+        # Update session state (not for an empty answer, as in _route_and_execute)
+        if empty_error is None:
+            user_msg = messages[-1] if messages else {"role": "user", "content": ""}
+            self._sessions.update(
+                session_id=session_id,
+                user_message=user_msg,
+                assistant_message={"role": "assistant", "content": assistant_content},
+                model_used=selected_model,
+                cost_usd=actual_cost,
+                savings_usd=savings,
+            )
 
         self._telemetry.record(TelemetryEvent(
             customer_key=self._fluxcompute_key,
@@ -788,6 +847,10 @@ class FluxClient:
             classification_ms=classification.classification_ms,
             overhead_ms=round(overhead_ms, 1),
         ))
+
+        if empty_error is not None:
+            empty_error.raw = final
+            raise empty_error
 
         # Yield metadata sentinel — _FluxStreamContext catches this, stops iteration, exposes metadata
         yield FluxMetadata(
@@ -807,6 +870,8 @@ class FluxClient:
                 cache_read_tokens=cache_read,
                 cache_hit=cache_read > 0,
             ),
+            truncated=bool(finish["truncated"]),
+            reasoning_tokens=finish["reasoning_tokens"],
         )
 
     async def close(self) -> None:

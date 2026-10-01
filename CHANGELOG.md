@@ -6,6 +6,51 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Before 1.0, a minor version bump may contain breaking changes.
 
+## [0.3.3] - 2026-10-01
+
+### Fixed
+
+- **gpt-5.x and gpt-6-luna requests were rejected with a 400.** The
+  dispatcher decided which OpenAI parameters to send by model name, and only
+  `o1`/`o3`/`o4` counted as reasoning models. Every other model, including
+  `gpt-6-luna`, the easy tier `auto` has routed to since 0.3.2, was sent
+  `max_tokens` and `temperature`, and reasoning models reject both. Every
+  OpenAI model is now sent `max_completion_tokens`, which chat and reasoning
+  models both accept (checked live on gpt-4o-mini, gpt-5.6-luna and
+  gpt-6-luna). A model released later needs no SDK change.
+- **A model that rejects one parameter no longer fails the call.** If a model
+  answers with a 400 naming a parameter it doesn't support (OpenAI's
+  `unsupported_parameter`/`unsupported_value`, or Anthropic's "`temperature`
+  is deprecated for this model"), the SDK resends once without it, logs a
+  warning, and leaves it out of later calls to that model in the process. A
+  rejected request is not billed, so the resend costs nothing. Every other
+  error, including a 400 for a value out of range, surfaces unchanged. Applies
+  to `messages.create()` and `messages.stream()`.
+- **An empty answer from a spent token limit was returned as `""`.** A
+  reasoning model can spend its whole output limit on hidden reasoning and
+  return no text with `finish_reason="length"`; the SDK returned that `""` and
+  recorded the call as a success. It now raises `FluxEmptyResponseError`,
+  which names the model, the limit, and how many tokens went to reasoning. The
+  graph node is recorded as failed, with failure reason `token_budget`, and
+  keeps the real tokens and cost, since they were billed. The empty turn is
+  not added to session history. A tool call with no text is still a complete
+  answer and does not raise.
+
+### Added
+
+- `FluxEmptyResponseError`, exported from `fluxcompute`.
+- `FluxMetadata.truncated` (the answer stopped at `max_tokens` but has text;
+  also logged as a warning) and `FluxMetadata.reasoning_tokens` (hidden
+  reasoning billed inside the output tokens, for OpenAI and Gemini).
+- `token_budget` failure reason in the telemetry contract.
+
+### Changed
+
+- **`temperature` now defaults to `None`, which leaves it out of the request**
+  so the provider's own default applies. Previously `1.0` was always sent.
+  The result is the same for every provider; reasoning models only accept the
+  default.
+
 ## [0.3.2] - 2026-09-26
 
 ### Added

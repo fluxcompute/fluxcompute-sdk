@@ -22,9 +22,14 @@ wired up for the non-streaming path (see FluxClient._stream_execute).
 from __future__ import annotations
 
 import json
+import logging
+import re
 import time
 import uuid
-from typing import Any, AsyncGenerator, Dict, List, Optional
+from contextlib import AsyncExitStack
+from typing import Any, AsyncGenerator, Awaitable, Callable, Dict, List, Optional, Set
+
+logger = logging.getLogger("fluxcompute.dispatcher")
 
 
 # ---------------------------------------------------------------------------
@@ -37,7 +42,7 @@ async def dispatch_anthropic(
     messages: List[Dict[str, Any]],
     system: Any = None,             # str | List[Dict] (content blocks)
     max_tokens: int = 4096,
-    temperature: float = 1.0,
+    temperature: Optional[float] = None,
     **kwargs,
 ) -> Dict[str, Any]:
     """
@@ -50,23 +55,8 @@ async def dispatch_anthropic(
     """
     start = time.monotonic()
 
-    if system is None:
-        system_msgs = [m for m in messages if m.get("role") == "system"]
-        if system_msgs:
-            system = system_msgs[0]["content"]
-        messages = [m for m in messages if m.get("role") != "system"]
-
-    create_kwargs: Dict[str, Any] = {
-        "model": model,
-        "messages": messages,
-        "max_tokens": max_tokens,
-        "temperature": temperature,
-        **kwargs,
-    }
-    if system:
-        create_kwargs["system"] = system
-
-    response = await client.messages.create(**create_kwargs)
+    create_kwargs = anthropic_create_kwargs(model, messages, system, max_tokens, temperature, kwargs)
+    response = await _create_with_param_fallback(client.messages.create, model, create_kwargs)
 
     elapsed_ms = (time.monotonic() - start) * 1000
     usage = response.usage
@@ -78,6 +68,7 @@ async def dispatch_anthropic(
         "output_tokens": usage.output_tokens,
         "cache_write_tokens": getattr(usage, "cache_creation_input_tokens", 0) or 0,
         "cache_read_tokens": getattr(usage, "cache_read_input_tokens", 0) or 0,
+        **anthropic_finish_state(response),
     }
 
 
@@ -86,7 +77,7 @@ async def dispatch_openai(
     model: str,
     messages: List[Dict[str, Any]],
     max_tokens: int = 4096,
-    temperature: float = 1.0,
+    temperature: Optional[float] = None,
     **kwargs,
 ) -> Dict[str, Any]:
     """
@@ -98,12 +89,13 @@ async def dispatch_openai(
 
     plain_messages = [_flatten_to_openai(m) for m in messages]
 
-    response = await client.chat.completions.create(
-        model=model,
-        messages=plain_messages,
+    create_kwargs = {
+        "model": model,
+        "messages": plain_messages,
         **_openai_token_kwargs(model, max_tokens, temperature),
         **kwargs,
-    )
+    }
+    response = await _create_with_param_fallback(client.chat.completions.create, model, create_kwargs)
 
     elapsed_ms = (time.monotonic() - start) * 1000
 
@@ -114,6 +106,7 @@ async def dispatch_openai(
         "output_tokens": response.usage.completion_tokens,
         "cache_write_tokens": 0,
         "cache_read_tokens": 0,
+        **openai_finish_state(response),
     }
 
 
@@ -123,7 +116,7 @@ async def dispatch_gemini(
     messages: List[Dict[str, Any]],
     system: Any = None,             # str — Gemini has no content-block system format
     max_tokens: int = 4096,
-    temperature: float = 1.0,
+    temperature: Optional[float] = None,
     **kwargs,
 ) -> Dict[str, Any]:
     """
@@ -144,11 +137,9 @@ async def dispatch_gemini(
 
     contents = [_to_gemini_content(m) for m in messages]
 
-    config: Dict[str, Any] = {
-        "max_output_tokens": max_tokens,
-        "temperature": temperature,
-        **kwargs,
-    }
+    config: Dict[str, Any] = {"max_output_tokens": max_tokens, **kwargs}
+    if temperature is not None:
+        config["temperature"] = temperature
     if system:
         config["system_instruction"] = system
 
@@ -170,6 +161,7 @@ async def dispatch_gemini(
         # call/cost the way Anthropic's is) — only a read count comes back.
         "cache_write_tokens": 0,
         "cache_read_tokens": getattr(usage, "cached_content_token_count", 0) or 0,
+        **gemini_finish_state(response),
     }
 
 
@@ -183,7 +175,7 @@ async def stream_anthropic(
     messages: List[Dict[str, Any]],
     system: Any = None,
     max_tokens: int = 4096,
-    temperature: float = 1.0,
+    temperature: Optional[float] = None,
     stats: Optional[Dict[str, Any]] = None,
     **kwargs,
 ) -> AsyncGenerator[str, None]:
@@ -203,21 +195,7 @@ async def stream_anthropic(
     if stats is None:
         stats = {}
 
-    if system is None:
-        system_msgs = [m for m in messages if m.get("role") == "system"]
-        if system_msgs:
-            system = system_msgs[0]["content"]
-        messages = [m for m in messages if m.get("role") != "system"]
-
-    create_kwargs: Dict[str, Any] = {
-        "model": model,
-        "messages": messages,
-        "max_tokens": max_tokens,
-        "temperature": temperature,
-        **kwargs,
-    }
-    if system:
-        create_kwargs["system"] = system
+    create_kwargs = anthropic_create_kwargs(model, messages, system, max_tokens, temperature, kwargs)
 
     completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
     start = time.monotonic()
@@ -229,7 +207,8 @@ async def stream_anthropic(
                 "created": int(time.time()), "model": model,
                 "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}]})
 
-    async with client.messages.stream(**create_kwargs) as stream:
+    async with AsyncExitStack() as stack:
+        stream = await open_stream_with_param_fallback(stack, client.messages.stream, model, create_kwargs)
         async for event in stream:
             event_type = getattr(event, "type", None)
 
@@ -289,7 +268,7 @@ async def stream_openai(
     model: str,
     messages: List[Dict[str, Any]],
     max_tokens: int = 4096,
-    temperature: float = 1.0,
+    temperature: Optional[float] = None,
     stats: Optional[Dict[str, Any]] = None,
     **kwargs,
 ) -> AsyncGenerator[str, None]:
@@ -306,13 +285,17 @@ async def stream_openai(
     start = time.monotonic()
     ttft_ms: Optional[float] = None
 
-    async with client.chat.completions.stream(
-        model=model,
-        messages=plain_messages,
-        stream_options={"include_usage": True},
+    create_kwargs = {
+        "model": model,
+        "messages": plain_messages,
+        "stream_options": {"include_usage": True},
         **_openai_token_kwargs(model, max_tokens, temperature),
         **kwargs,
-    ) as stream:
+    }
+    async with AsyncExitStack() as stack:
+        stream = await open_stream_with_param_fallback(
+            stack, client.chat.completions.stream, model, create_kwargs,
+        )
         async for chunk in stream:
             if chunk.choices or getattr(chunk, "usage", None):
                 if ttft_ms is None and chunk.choices:
@@ -344,13 +327,6 @@ def _sse(payload: Dict[str, Any]) -> str:
     return f"data: {json.dumps(payload)}\n\n"
 
 
-def _is_reasoning_model(model: str) -> bool:
-    """OpenAI reasoning models (o1/o3/o4 families) use a different call contract
-    than chat models: they take `max_completion_tokens` instead of `max_tokens`
-    and reject any non-default `temperature`."""
-    return model.startswith(("o1", "o3", "o4"))
-
-
 def _openai_stream_text(event: Any) -> str:
     """Text delta from one `chat.completions.stream()` event, or "".
 
@@ -371,15 +347,199 @@ def _openai_stream_text(event: Any) -> str:
     return ""
 
 
-def _openai_token_kwargs(model: str, max_tokens: int, temperature: float) -> Dict[str, Any]:
-    """Token/sampling kwargs for chat.completions, adapted per model family.
+def _openai_token_kwargs(model: str, max_tokens: int, temperature: Optional[float]) -> Dict[str, Any]:
+    """Token/sampling kwargs for chat.completions.
 
-    Reasoning models bill hidden reasoning tokens against the completion budget,
-    so `max_tokens` maps to `max_completion_tokens`; `temperature` is omitted
-    because only the default is accepted."""
-    if _is_reasoning_model(model):
-        return {"max_completion_tokens": max_tokens}
-    return {"max_tokens": max_tokens, "temperature": temperature}
+    No per-family branching on the model name: a name list goes stale with every
+    release (gpt-5.x and gpt-6-luna were sent `max_tokens` + `temperature` and
+    400'd). `max_completion_tokens` is accepted by chat and reasoning models alike
+    (checked live on gpt-4o-mini, gpt-5.6-luna, gpt-6-luna), while `max_tokens`
+    is rejected by reasoning models. `temperature` goes out only when the caller
+    set one; a model that rejects it is handled by the param fallback below."""
+    kwargs: Dict[str, Any] = {"max_completion_tokens": max_tokens}
+    if temperature is not None:
+        kwargs["temperature"] = temperature
+    return _without_rejected(model, kwargs)
+
+
+def anthropic_create_kwargs(
+    model: str,
+    messages: List[Dict[str, Any]],
+    system: Any,
+    max_tokens: int,
+    temperature: Optional[float],
+    extra: Dict[str, Any],
+) -> Dict[str, Any]:
+    """messages.create/stream kwargs, lifting a {role: system} message into `system`
+    when no explicit system is given (the Messages API has no system role)."""
+    if system is None:
+        system_msgs = [m for m in messages if m.get("role") == "system"]
+        if system_msgs:
+            system = system_msgs[0]["content"]
+        messages = [m for m in messages if m.get("role") != "system"]
+
+    create_kwargs: Dict[str, Any] = {"model": model, "messages": messages, "max_tokens": max_tokens, **extra}
+    if temperature is not None:
+        create_kwargs["temperature"] = temperature
+    if system:
+        create_kwargs["system"] = system
+    return _without_rejected(model, create_kwargs)
+
+
+# ---------------------------------------------------------------------------
+# Param fallback: a model that rejects one request parameter
+# ---------------------------------------------------------------------------
+
+#: Parameters a model has rejected, per model id, learned from its 400s. Later
+#: calls leave them out up front instead of paying the round trip again.
+_REJECTED_PARAMS: Dict[str, Set[str]] = {}
+
+#: Rejected params that have a replacement spelling, rather than being dropped.
+_RENAMES = {"max_tokens": "max_completion_tokens", "max_completion_tokens": "max_tokens"}
+_DROPPABLE = frozenset({"temperature", "top_p"})
+
+#: OpenAI's error codes for "this model doesn't take that parameter/value". Other
+#: codes on the same param (e.g. a max_completion_tokens above the model's limit)
+#: are real caller errors and must surface unchanged.
+_OPENAI_UNSUPPORTED_CODES = frozenset({"unsupported_parameter", "unsupported_value"})
+
+#: Anthropic's 400 carries no `param` field, only a message, e.g.
+#: "`temperature` is deprecated for this model." (claude-opus-4-8, 2026-09).
+_ANTHROPIC_UNSUPPORTED_RE = re.compile(
+    r"`?(temperature|top_p)`?\s+is\s+(?:deprecated|not supported|unsupported)",
+    re.IGNORECASE,
+)
+
+
+def _without_rejected(model: str, kwargs: Dict[str, Any]) -> Dict[str, Any]:
+    """kwargs with every param this model has rejected dropped or renamed."""
+    for param in _REJECTED_PARAMS.get(model, ()):
+        if param not in kwargs:
+            continue
+        value = kwargs.pop(param)
+        renamed = _RENAMES.get(param)
+        if renamed and renamed not in kwargs and renamed not in _REJECTED_PARAMS[model]:
+            kwargs[renamed] = value
+    return kwargs
+
+
+def _rejected_param(exc: BaseException, kwargs: Dict[str, Any]) -> Optional[str]:
+    """The param a 400 says this model doesn't support, if it is one we can drop or
+    rename and the request actually sent it; None for every other error."""
+    if getattr(exc, "status_code", None) != 400:
+        return None
+    param = getattr(exc, "param", None)  # set on openai errors, absent on anthropic's
+    if param is not None:
+        fixable = param in _DROPPABLE or param in _RENAMES
+        if fixable and param in kwargs and getattr(exc, "code", None) in _OPENAI_UNSUPPORTED_CODES:
+            return param
+        return None
+    match = _ANTHROPIC_UNSUPPORTED_RE.search(str(getattr(exc, "message", None) or exc))
+    if match and match.group(1).lower() in kwargs:
+        return match.group(1).lower()
+    return None
+
+
+def _remember_rejection(model: str, param: str) -> None:
+    rejected = _REJECTED_PARAMS.setdefault(model, set())
+    if param not in rejected:
+        rejected.add(param)
+        logger.warning(
+            "%s rejected %r; resending without it, and leaving it out of later calls "
+            "to this model in this process.", model, param,
+        )
+
+
+def _retry_kwargs(exc: BaseException, model: str, kwargs: Dict[str, Any]) -> Dict[str, Any]:
+    """The kwargs to resend after `exc`, or re-raise it if no param is to blame.
+
+    One resend, only for a 400: the provider rejected the request before doing
+    any work, so nothing was billed and nothing ran twice."""
+    param = _rejected_param(exc, kwargs)
+    if param is None:
+        raise exc
+    _remember_rejection(model, param)
+    return _without_rejected(model, dict(kwargs))
+
+
+async def _create_with_param_fallback(
+    create: Callable[..., Awaitable[Any]], model: str, kwargs: Dict[str, Any],
+) -> Any:
+    """`await create(**kwargs)`, resent once without a param the model rejects."""
+    try:
+        return await create(**kwargs)
+    except Exception as exc:
+        retry = _retry_kwargs(exc, model, kwargs)
+    return await create(**retry)
+
+
+async def open_stream_with_param_fallback(
+    stack: AsyncExitStack, open_stream: Callable[..., Any], model: str, kwargs: Dict[str, Any],
+) -> Any:
+    """Enter `open_stream(**kwargs)` on `stack`, resent once without a param the model
+    rejects. The 400 surfaces on entering the stream, before any chunk is yielded,
+    so resending can't duplicate output."""
+    try:
+        return await stack.enter_async_context(open_stream(**kwargs))
+    except Exception as exc:
+        retry = _retry_kwargs(exc, model, kwargs)
+    return await stack.enter_async_context(open_stream(**retry))
+
+
+# ---------------------------------------------------------------------------
+# Finish state: did the model stop because it ran out of output tokens?
+# ---------------------------------------------------------------------------
+
+def _count(value: Any) -> int:
+    return value if isinstance(value, int) else 0
+
+
+def openai_finish_state(completion: Any) -> Dict[str, Any]:
+    """`truncated` / `finish_reason` / `reasoning_tokens` / `has_tool_calls` from a
+    chat completion. `reasoning_tokens` is the hidden reasoning billed inside
+    `completion_tokens`, so all of them going to reasoning is visible."""
+    choices = getattr(completion, "choices", None) or []
+    choice = choices[0] if isinstance(choices, list) and choices else None
+    finish = getattr(choice, "finish_reason", None)
+    tool_calls = getattr(getattr(choice, "message", None), "tool_calls", None)
+    details = getattr(getattr(completion, "usage", None), "completion_tokens_details", None)
+    return {
+        "truncated": finish == "length",
+        "finish_reason": finish if isinstance(finish, str) else None,
+        "reasoning_tokens": _count(getattr(details, "reasoning_tokens", None)),
+        "has_tool_calls": isinstance(tool_calls, list) and bool(tool_calls),
+    }
+
+
+def anthropic_finish_state(message: Any) -> Dict[str, Any]:
+    """As openai_finish_state, for an Anthropic Message. Thinking tokens are part of
+    `output_tokens` and not broken out, so reasoning_tokens stays 0."""
+    stop = getattr(message, "stop_reason", None)
+    content = getattr(message, "content", None)
+    blocks = content if isinstance(content, list) else []
+    return {
+        "truncated": stop == "max_tokens",
+        "finish_reason": stop if isinstance(stop, str) else None,
+        "reasoning_tokens": 0,
+        "has_tool_calls": any(getattr(b, "type", None) == "tool_use" for b in blocks),
+    }
+
+
+def gemini_finish_state(response: Any) -> Dict[str, Any]:
+    """As openai_finish_state, for a Gemini GenerateContentResponse."""
+    candidates = getattr(response, "candidates", None)
+    candidate = candidates[0] if isinstance(candidates, list) and candidates else None
+    finish = getattr(candidate, "finish_reason", None)
+    finish_name = getattr(finish, "name", finish)   # FinishReason enum or plain string
+    parts = getattr(getattr(candidate, "content", None), "parts", None)
+    usage = getattr(response, "usage_metadata", None)
+    return {
+        "truncated": finish_name == "MAX_TOKENS",
+        "finish_reason": finish_name if isinstance(finish_name, str) else None,
+        "reasoning_tokens": _count(getattr(usage, "thoughts_token_count", None)),
+        "has_tool_calls": isinstance(parts, list)
+        and any(getattr(p, "function_call", None) is not None for p in parts),
+    }
 
 
 def _flatten_to_openai(msg: Dict[str, Any]) -> Dict[str, Any]:
