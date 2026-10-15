@@ -10,6 +10,8 @@ classifies each request and dispatches it to the right tier, so simple
 questions stop costing frontier-model prices, and reports exactly what you
 saved on every call.
 
+Want help optimizing your agent's runtime? [Book a demo](https://fluxcompute.dev/demo?src=pypi).
+
 ```bash
 pip install fluxcompute
 ```

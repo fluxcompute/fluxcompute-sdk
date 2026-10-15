@@ -64,6 +64,7 @@ examples = ["pyyaml>=6.0"]
 Homepage = "https://fluxcompute.dev"
 Repository = "https://github.com/fluxcompute/fluxcompute-sdk"
 Changelog = "https://github.com/fluxcompute/fluxcompute-sdk/blob/main/CHANGELOG.md"
+"Book a demo" = "https://fluxcompute.dev/demo?src=pypi"
 
 [tool.setuptools.packages.find]
 include = ["fluxcompute*"]
